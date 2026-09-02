@@ -1,0 +1,5 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+edge-tts==7.2.8
+youtube-transcript-api==1.2.4

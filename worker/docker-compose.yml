@@ -1,0 +1,29 @@
+# Sidecar media worker for the yt-cross-domain-autopilot n8n workflow.
+#
+# n8n reaches this at http://host.docker.internal:8099 — NOT by container name.
+# (These containers sit on Docker's default bridge, which has no embedded DNS
+# resolver, so container-name DNS does not resolve. See the repo CLAUDE.md.)
+services:
+  yt-media-worker:
+    build: .
+    container_name: yt-media-worker
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    volumes:
+      # Prompt files are read from disk and served to n8n, satisfying the
+      # "read from file, inject as system message" requirement.
+      - ../prompts:/prompts:ro
+      # Job workspaces. Survives restarts so artifacts from a failed upload
+      # are still recoverable.
+      - yt_media_jobs:/data/jobs
+    environment:
+      TTS_VOICE: en-GB-RyanNeural
+      TRANSCRIPT_PROXY: ${TRANSCRIPT_PROXY:-}
+
+volumes:
+  yt_media_jobs:
+
+# Optional: route transcript fetches through a proxy. YouTube IP-blocks
+# transcript scraping; this is the documented remedy.
+#   TRANSCRIPT_PROXY: http://user:pass@host:port
