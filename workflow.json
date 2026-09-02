@@ -1,0 +1,1767 @@
+{
+  "name": "YT Cross-Domain Autopilot — AI × Radiology",
+  "nodes": [
+    {
+      "id": "a001",
+      "name": "Schedule · Every 3 Days 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -460,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 3,
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a020",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -240,
+        300
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a002",
+              "name": "CHANNEL_AI_1",
+              "value": "UC2ojq-nuP8ceeHqiroeKhBA",
+              "type": "string"
+            },
+            {
+              "id": "a003",
+              "name": "CHANNEL_AI_1_DOMAIN",
+              "value": "AI automation",
+              "type": "string"
+            },
+            {
+              "id": "a004",
+              "name": "CHANNEL_AI_2",
+              "value": "UCui4jxDaMb53Gdh-AZUTPAg",
+              "type": "string"
+            },
+            {
+              "id": "a005",
+              "name": "CHANNEL_AI_2_DOMAIN",
+              "value": "AI automation",
+              "type": "string"
+            },
+            {
+              "id": "a006",
+              "name": "CHANNEL_AI_3",
+              "value": "UCMwVTLZIRRUyyVrkjDpn4pA",
+              "type": "string"
+            },
+            {
+              "id": "a007",
+              "name": "CHANNEL_AI_3_DOMAIN",
+              "value": "AI automation",
+              "type": "string"
+            },
+            {
+              "id": "a008",
+              "name": "CHANNEL_RADIOLOGY_1",
+              "value": "UCU84jkgqGncjlV5YTKIFMow",
+              "type": "string"
+            },
+            {
+              "id": "a009",
+              "name": "CHANNEL_RADIOLOGY_1_DOMAIN",
+              "value": "radiology/healthcare",
+              "type": "string"
+            },
+            {
+              "id": "a010",
+              "name": "CHANNEL_RADIOLOGY_2",
+              "value": "UC9Zp0PrjNbs4nwQNdkquRug",
+              "type": "string"
+            },
+            {
+              "id": "a011",
+              "name": "CHANNEL_RADIOLOGY_2_DOMAIN",
+              "value": "radiology/healthcare",
+              "type": "string"
+            },
+            {
+              "id": "a012",
+              "name": "NICHE_CONTEXT",
+              "value": "My channel targets radiographers and healthcare professionals who want to use AI and automation tools to work smarter. Every video MUST connect an AI or automation concept to a specific radiology or healthcare use case. I am a radiographer AND an AI automation engineer — my credibility is the bridge between both worlds. Never produce a generic AI tutorial. Never produce a generic radiology lesson. Always produce the intersection of the two.",
+              "type": "string"
+            },
+            {
+              "id": "a013",
+              "name": "TARGET_AUDIENCE",
+              "value": "radiographers, imaging technologists, healthcare professionals curious about AI, and AI practitioners interested in healthcare applications",
+              "type": "string"
+            },
+            {
+              "id": "a014",
+              "name": "VIDEO_LENGTH_MINUTES",
+              "value": 8,
+              "type": "number"
+            },
+            {
+              "id": "a015",
+              "name": "MEDIA_WORKER_URL",
+              "value": "http://host.docker.internal:8099",
+              "type": "string"
+            },
+            {
+              "id": "a016",
+              "name": "RESEARCH_MODEL",
+              "value": "anthropic/claude-sonnet-4.5",
+              "type": "string"
+            },
+            {
+              "id": "a017",
+              "name": "WRITER_MODEL",
+              "value": "anthropic/claude-sonnet-4.5",
+              "type": "string"
+            },
+            {
+              "id": "a018",
+              "name": "JUDGE_MODEL",
+              "value": "openai/gpt-4o",
+              "type": "string"
+            },
+            {
+              "id": "a019",
+              "name": "PRIVACY_STATUS",
+              "value": "private",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a021",
+      "name": "Build Channel List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Emits one item per research channel, carrying its domain label.\n// The domain travels with every video from here to the research prompt.\nconst cfg = $('Config').first().json;\nconst keys = [\n  'CHANNEL_AI_1', 'CHANNEL_AI_2', 'CHANNEL_AI_3',\n  'CHANNEL_RADIOLOGY_1', 'CHANNEL_RADIOLOGY_2',\n];\n\nconst channels = [];\nfor (const key of keys) {\n  const id = (cfg[key] || '').trim();\n  if (!id) continue;\n  channels.push({ key, id, domain: cfg[key + '_DOMAIN'] || 'unknown' });\n}\n\nif (channels.length === 0) {\n  throw new Error('Config has no channel IDs set.');\n}\n\nreturn channels.map((c) => ({ json: c, pairedItem: { item: 0 } }));"
+      }
+    },
+    {
+      "id": "a022",
+      "name": "YT · Search Channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "channelId",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "part",
+              "value": "snippet"
+            },
+            {
+              "name": "order",
+              "value": "viewCount"
+            },
+            {
+              "name": "type",
+              "value": "video"
+            },
+            {
+              "name": "maxResults",
+              "value": "10"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a023",
+      "name": "Flatten & Tag Domain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Collapses 5 search responses into one item holding up to 50 videos.\n// Domain is resolved by channelId rather than by input position, so a failed\n// or reordered channel call cannot mislabel anyone.\nconst cfg = $('Config').first().json;\nconst keys = [\n  'CHANNEL_AI_1', 'CHANNEL_AI_2', 'CHANNEL_AI_3',\n  'CHANNEL_RADIOLOGY_1', 'CHANNEL_RADIOLOGY_2',\n];\n\nconst domainByChannel = {};\nfor (const key of keys) {\n  if (cfg[key]) domainByChannel[cfg[key]] = cfg[key + '_DOMAIN'] || 'unknown';\n}\n\nconst videos = [];\nconst seen = new Set();\nconst errors = [];\n\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  if (body.error) {\n    errors.push(body.error.message || 'unknown search error');\n    continue;\n  }\n  for (const r of body.items || []) {\n    const videoId = r?.id?.videoId;\n    if (!videoId || seen.has(videoId)) continue;\n    seen.add(videoId);\n    const channelId = r.snippet?.channelId || '';\n    videos.push({\n      video_id: videoId,\n      title: r.snippet?.title || '',\n      description: r.snippet?.description || '',\n      published_at: r.snippet?.publishedAt || '',\n      channel_id: channelId,\n      channel_title: r.snippet?.channelTitle || '',\n      domain: domainByChannel[channelId] || 'unknown',\n    });\n  }\n}\n\nif (videos.length === 0) {\n  throw new Error(\n    'No videos returned from any channel search. Errors: ' +\n      (errors.join(' | ') || 'none reported')\n  );\n}\n\nreturn [{\n  json: {\n    videos,\n    video_ids: videos.map((v) => v.video_id),\n    channels_ok: $input.all().length - errors.length,\n    search_errors: errors,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a024",
+      "name": "YT · Batch Statistics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        640,
+        300
+      ],
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/videos",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "={{ $json.video_ids.slice(0, 50).join(\",\") }}"
+            },
+            {
+              "name": "part",
+              "value": "statistics,snippet"
+            },
+            {
+              "name": "maxResults",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a025",
+      "name": "Rank & Balance Domains",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const AI = 'AI automation';\nconst RAD = 'radiology/healthcare';\n\nconst prev = $('Flatten & Tag Domain').first().json;\nconst stats = $input.first().json.items || [];\n\nconst byId = {};\nfor (const s of stats) byId[s.id] = s;\n\nconst enriched = prev.videos.map((v) => {\n  const s = byId[v.video_id] || {};\n  const st = s.statistics || {};\n  const sn = s.snippet || {};\n  return {\n    ...v,\n    title: sn.title || v.title,\n    description: String(sn.description || v.description || '').slice(0, 1200),\n    tags: sn.tags || [],\n    viewCount: parseInt(st.viewCount || '0', 10),\n    likeCount: parseInt(st.likeCount || '0', 10),\n    commentCount: parseInt(st.commentCount || '0', 10),\n  };\n});\n\nenriched.sort((a, b) => b.viewCount - a.viewCount);\n\n// Top 10 overall, then force at least 2 per domain by displacing the\n// lowest-ranked videos of the over-represented domain.\nlet top = enriched.slice(0, 10);\nfor (const domain of [AI, RAD]) {\n  const have = top.filter((v) => v.domain === domain);\n  if (have.length >= 2) continue;\n  const need = 2 - have.length;\n  const additions = enriched\n    .filter((v) => v.domain === domain && !top.includes(v))\n    .slice(0, need);\n  if (additions.length === 0) continue;\n  const other = top.filter((v) => v.domain !== domain);\n  const dropped = other.slice(0, Math.max(0, other.length - additions.length));\n  top = [...top.filter((v) => v.domain === domain), ...dropped, ...additions];\n  top.sort((a, b) => b.viewCount - a.viewCount);\n}\ntop = top.slice(0, 10);\n\n// Top 6 for transcripts, guaranteeing at least 2 per domain.\nconst picked = [];\nfor (const domain of [AI, RAD]) {\n  for (const v of top.filter((x) => x.domain === domain).slice(0, 2)) picked.push(v);\n}\nfor (const v of top) {\n  if (picked.length >= 6) break;\n  if (!picked.includes(v)) picked.push(v);\n}\nconst transcriptSet = picked.slice(0, 6);\n\nconst domain_map = {};\nfor (const v of top) domain_map[v.video_id] = v.domain;\n\nreturn [{\n  json: {\n    enriched_top_videos: top,\n    ai_channel_data: top.filter((v) => v.domain === AI),\n    radiology_channel_data: top.filter((v) => v.domain === RAD),\n    transcript_ids: transcriptSet.map((v) => v.video_id),\n    domain_map,\n    videos_analyzed: enriched.length,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a026",
+      "name": "Worker · Fetch Transcripts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1080,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/transcripts",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ video_ids: $json.transcript_ids, domain_map: $json.domain_map, limit: 6 }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a027",
+      "name": "Worker · Research Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1300,
+        300
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/prompts/research",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a028",
+      "name": "Prepare Research Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Splits transcripts back out by domain so the model sees the two worlds\n// side by side rather than as one undifferentiated pile.\nconst AI = 'AI automation';\n\nconst cfg = $('Config').first().json;\nconst ranked = $('Rank & Balance Domains').first().json;\nconst tRes = $('Worker · Fetch Transcripts').first().json || {};\nconst transcripts = tRes.transcripts || {};\n\nconst ai_transcripts = {};\nconst radiology_transcripts = {};\nfor (const [videoId, rec] of Object.entries(transcripts)) {\n  const bucket = rec.domain === AI ? ai_transcripts : radiology_transcripts;\n  bucket[videoId] = { transcript: rec.transcript, domain: rec.domain };\n}\n\nconst payload = {\n  ai_channel_data: ranked.ai_channel_data,\n  radiology_channel_data: ranked.radiology_channel_data,\n  ai_transcripts,\n  radiology_transcripts,\n  niche_context: cfg.NICHE_CONTEXT,\n  target_audience: cfg.TARGET_AUDIENCE,\n};\n\nreturn [{\n  json: {\n    payload_json: JSON.stringify(payload),\n    system_prompt: $('Worker · Research Prompt').first().json.data,\n    transcripts_used: Object.keys(transcripts).length,\n    transcripts_available: tRes.available_count || 0,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a029",
+      "name": "OpenRouter · Research",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1740,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.RESEARCH_MODEL, temperature: 0.4, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $json.system_prompt }, { role: 'user', content: $json.payload_json } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a030",
+      "name": "Parse Research",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Tolerant parse: strips accidental markdown fences before JSON.parse.\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\nlet ok = true;\nlet parsed = null;\nlet parse_error = null;\nlet word_count = null;\nlet word_target = null;\n\ntry {\n  const cleaned = String(raw)\n    .replace(/^\\s*```(?:json)?/i, '')\n    .replace(/```\\s*$/, '')\n    .trim();\n  parsed = JSON.parse(cleaned);\n  if (!(parsed && parsed.recommended_topic && parsed.intersection_gap)) {\n    ok = false;\n    parse_error = 'research JSON parsed but is missing required fields';\n  }\n} catch (err) {\n  ok = false;\n  parse_error = err.message;\n}\n\n\nreturn [{\n  json: { ok, parsed, parse_error, word_count, word_target, raw: ok ? undefined : String(raw).slice(0, 2000) },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a032",
+      "name": "Research JSON OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2180,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a031",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a033",
+      "name": "OpenRouter · Research Retry",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2180,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.RESEARCH_MODEL, temperature: 0.4, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Prepare Research Payload').first().json.system_prompt + '\\n\\nCRITICAL: your previous response was REJECTED. It was either not valid JSON, or the script was far shorter than the required length. Return ONLY a single valid JSON object -- no markdown fences, no preamble, no explanation -- and meet every stated word count. Long, substantive sections are required; do not summarise.' }, { role: 'user', content: $('Prepare Research Payload').first().json.payload_json } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a034",
+      "name": "Parse Research (Retry)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        480
+      ],
+      "parameters": {
+        "jsCode": "// Tolerant parse: strips accidental markdown fences before JSON.parse.\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\nlet ok = true;\nlet parsed = null;\nlet parse_error = null;\nlet word_count = null;\nlet word_target = null;\n\ntry {\n  const cleaned = String(raw)\n    .replace(/^\\s*```(?:json)?/i, '')\n    .replace(/```\\s*$/, '')\n    .trim();\n  parsed = JSON.parse(cleaned);\n  if (!(parsed && parsed.recommended_topic && parsed.intersection_gap)) {\n    ok = false;\n    parse_error = 'research JSON parsed but is missing required fields';\n  }\n} catch (err) {\n  ok = false;\n  parse_error = err.message;\n}\n\n\nreturn [{\n  json: { ok, parsed, parse_error, word_count, word_target, raw: ok ? undefined : String(raw).slice(0, 2000) },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a035",
+      "name": "Research Ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Single join point for both the first-try and retry branches, so every\n// downstream reference has exactly one node to read from.\nconst j = $input.first().json;\nif (!j.ok || !j.parsed) {\n  throw new Error('Research JSON unparseable after one retry: ' + (j.parse_error || 'unknown'));\n}\nreturn [{ json: j.parsed, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "a036",
+      "name": "Worker · Script Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2840,
+        300
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/prompts/script",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a037",
+      "name": "Prepare Script Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3060,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst research = $('Research Ready').first().json;\n\nconst instruction = [\n  'Write a unique faceless video script on the recommended_topic. The script must:',\n  \"- Open with a hook that speaks directly to a radiographer or healthcare worker's real daily frustration or curiosity\",\n  '- Use the AI winning hook style as structural inspiration only — never copy competitor content',\n  '- Explain the AI or automation concept in plain terms a healthcare professional would understand',\n  '- Show a concrete, specific radiology use case — not vague or hypothetical',\n  '- Sound like it comes from someone who has actually worked in both radiology AND AI — use that insider credibility',\n  '- End with a CTA that invites radiographers or AI practitioners to share their own experience',\n  '',\n  'LENGTH IS A HARD REQUIREMENT, not a suggestion. Target ' + cfg.VIDEO_LENGTH_MINUTES +\n    ' minutes at 130 words per minute = ' + Math.round(cfg.VIDEO_LENGTH_MINUTES * 130) +\n    ' words TOTAL. Budget it as:',\n  '  - hook: 60-90 words',\n  '  - EACH of the 5 body sections: ' + Math.round((cfg.VIDEO_LENGTH_MINUTES * 130 - 150) / 5) +\n    ' words minimum (this is per section, not for all five combined)',\n  '  - cta: 60-90 words',\n  'A script materially shorter than ' + Math.round(cfg.VIDEO_LENGTH_MINUTES * 130) +\n    ' words will be rejected and regenerated. Write each section out in full with concrete detail:' +\n  ' the actual tools, the actual n8n nodes, the actual sequence of steps. Do not outline,' +\n  ' summarise, or write section abstracts — write the actual spoken words.',\n  '',\n  // The previous version of this line asked for \"worked examples, specific tools\n  // and real numbers\". \"Real numbers\" is what produced \"a 30% decrease at our\n  // facility\" on the first live run: the model has no numbers, so it invented\n  // them. Length must be reached by explaining more deeply, never by inventing.\n  'REACH THE LENGTH BY GOING DEEPER, NOT BY INVENTING. Add more build detail, more',\n  'of the actual how, more explicit hypotheticals. Never add a statistic, a result,',\n  'a study or a deployment story to fill space — every one of those is an automatic',\n  'rejection under the truthfulness rules above, and padding with them will cost you',\n  'the whole draft.',\n].join('\\n');\n\nconst payload = {\n  research,\n  niche_context: cfg.NICHE_CONTEXT,\n  target_audience: cfg.TARGET_AUDIENCE,\n  video_length_minutes: cfg.VIDEO_LENGTH_MINUTES,\n  instruction,\n};\n\nreturn [{\n  json: {\n    payload_json: JSON.stringify(payload),\n    system_prompt: $('Worker · Script Prompt').first().json.data,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a038",
+      "name": "OpenRouter · Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3280,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.WRITER_MODEL, temperature: 0.7, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $json.system_prompt }, { role: 'user', content: $json.payload_json } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a039",
+      "name": "Parse Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Tolerant parse: strips accidental markdown fences before JSON.parse.\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\nlet ok = true;\nlet parsed = null;\nlet parse_error = null;\nlet word_count = null;\nlet word_target = null;\n\ntry {\n  const cleaned = String(raw)\n    .replace(/^\\s*```(?:json)?/i, '')\n    .replace(/```\\s*$/, '')\n    .trim();\n  parsed = JSON.parse(cleaned);\n  if (!(parsed && parsed.script && parsed.script.hook && Array.isArray(parsed.script.body) && parsed.seo && parsed.seo.title)) {\n    ok = false;\n    parse_error = 'script JSON parsed but is missing required fields';\n  }\n} catch (err) {\n  ok = false;\n  parse_error = err.message;\n}\n\n\nreturn [{\n  json: { ok, parsed, parse_error, word_count, word_target, raw: ok ? undefined : String(raw).slice(0, 2000) },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a041",
+      "name": "Script JSON OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3720,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a040",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a042",
+      "name": "OpenRouter · Script Retry",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3720,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.WRITER_MODEL, temperature: 0.7, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Prepare Script Payload').first().json.system_prompt + '\\n\\nCRITICAL: your previous response was REJECTED. It was either not valid JSON, or the script was far shorter than the required length. Return ONLY a single valid JSON object -- no markdown fences, no preamble, no explanation -- and meet every stated word count. Long, substantive sections are required; do not summarise.' }, { role: 'user', content: $('Prepare Script Payload').first().json.payload_json } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a043",
+      "name": "Parse Script (Retry)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3940,
+        480
+      ],
+      "parameters": {
+        "jsCode": "// Tolerant parse: strips accidental markdown fences before JSON.parse.\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\nlet ok = true;\nlet parsed = null;\nlet parse_error = null;\nlet word_count = null;\nlet word_target = null;\n\ntry {\n  const cleaned = String(raw)\n    .replace(/^\\s*```(?:json)?/i, '')\n    .replace(/```\\s*$/, '')\n    .trim();\n  parsed = JSON.parse(cleaned);\n  if (!(parsed && parsed.script && parsed.script.hook && Array.isArray(parsed.script.body) && parsed.seo && parsed.seo.title)) {\n    ok = false;\n    parse_error = 'script JSON parsed but is missing required fields';\n  }\n} catch (err) {\n  ok = false;\n  parse_error = err.message;\n}\n\n\nreturn [{\n  json: { ok, parsed, parse_error, word_count, word_target, raw: ok ? undefined : String(raw).slice(0, 2000) },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a044",
+      "name": "Script Ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const j = $input.first().json;\n\n// A missing or unparseable object is fatal — there is nothing to narrate.\nif (!j.parsed) {\n  throw new Error('Script JSON unparseable after one retry: ' + (j.parse_error || 'unknown'));\n}\n\n// A merely SHORT script is not fatal. By this point the retry has already been\n// spent, and shipping a slightly short video beats discarding a whole run's\n// research over word count. The shortfall is recorded and surfaced in Final Log.\nconst s = j.parsed;\ns._word_count = j.word_count;\ns._word_target = j.word_target;\ns._length_warning =\n  !j.ok && /too short/.test(j.parse_error || '') ? j.parse_error : null;\n// Trim the SEO title to YouTube's practical limit; the prompt asks for <60\n// but a model overshooting must not fail the upload.\nif (s.seo && typeof s.seo.title === 'string' && s.seo.title.length > 95) {\n  s.seo.title = s.seo.title.slice(0, 95).trim();\n}\nreturn [{ json: s, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "a045",
+      "name": "Worker · Verifier Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4160,
+        300
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/prompts/verifier",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a046",
+      "name": "Editorial Checks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4380,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Deterministic editorial checks -- Layer 2.\n// Catches fabrication by FORM: the claim classes this pipeline has no source to\n// support. Validated against fixtures/hallucinated-script.json (the real script\n// from execution 654), which must produce at least 6 blocking hits.\nconst cfg = $('Config').first().json;\nconst s = $input.first().json;\n\nconst body = Array.isArray(s.script && s.script.body) ? s.script.body : [];\nconst parts = [\n  ['hook', (s.script && s.script.hook) || ''],\n  ...body.map((b, i) => ['body' + (i + 1), b]),\n  ['cta', (s.script && s.script.cta) || ''],\n];\nconst fullText = parts.map((p) => String(p[1] || '')).join(' ');\nconst words = fullText.trim() ? fullText.trim().split(/\\s+/).length : 0;\nconst target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);\n\n// There is NO traceability exemption for percentages, and that is deliberate.\n//\n// Two earlier attempts both failed, and the regression test caught both:\n//   1. Exempting any figure whose digits appear in the research payload was\n//      useless -- the payload is full of incidental numbers (view counts, video\n//      ids, years), so \"50\" appeared somewhere and duly licensed \"up to 50%\".\n//   2. Tightening it to percentages-only STILL let \"up to 50%\" through, because\n//      \"50%\" really does appear in the corpus -- inside a competitor's video\n//      transcript.\n//\n// That second failure is the important one. The corpus is competitor YouTube\n// transcripts. A creator saying \"50%\" in their video is not evidence that\n// automation halves your reporting time; it is their marketing claim, unverified.\n// Treating it as a citable source would launder someone else's unsupported\n// number into this channel's voice.\n//\n// So every percentage and every measured outcome is blocked outright. This is\n// narrow: it does not touch ordinary numbers like \"4 hours\", \"5 steps\" or\n// \"400 integrations\", only claim-shaped figures the host cannot stand behind.\nlet corpus = '';\ntry { corpus = String($('Prepare Research Payload').first().json.payload_json || ''); } catch (e) { corpus = ''; }\n\nconst violations = [];\nconst add = (rule, severity, quote, why) => violations.push({\n  rule, severity, quote: String(quote).slice(0, 200), why, source: 'deterministic',\n});\n\nconst RULES = [\n  { rule: 'fabricated-statistic', severity: 'blocking',\n    re: /\\b\\d+(?:\\.\\d+)?\\s*(?:%|percent\\b)/gi,\n    why: 'A percentage the host cannot stand behind. Competitor transcripts are not evidence.' },\n  { rule: 'measured-outcome-claim', severity: 'blocking',\n    re: /\\b(?:a|an)\\s+\\d+(?:\\.\\d+)?\\s*(?:%|percent)?\\s*(?:decrease|increase|reduction|improvement|drop|rise)\\b/gi,\n    why: 'A measured outcome that was never measured.' },\n  { rule: 'first-person-deployment', severity: 'blocking',\n    re: /\\b(?:at|in)\\s+(?:our|my)\\s+(?:facility|hospital|department|trust|clinic|practice|site|unit)\\b|\\bwe\\s+(?:implemented|deployed|rolled\\s+out|installed|introduced)\\b/gi,\n    why: 'A first-person deployment story. The host has not run this.' },\n  { rule: 'unsourced-study-claim', severity: 'blocking',\n    re: /\\b(?:a\\s+study|studies\\s+(?:show|found)|research\\s+(?:shows|found)|according\\s+to\\s+[^.]{0,40}(?:study|paper|trial|report))\\b/gi,\n    why: 'Cites research that is not in the supplied payload.' },\n  // Advisory on purpose: radiologists are a legitimate topic, so a blocking\n  // regex here would fire on correct usage. The judge decides.\n  { rule: 'profession-confusion', severity: 'advisory',\n    re: /\\bradiologists?\\b/gi,\n    why: 'Mentions radiologists; the audience is radiographers. Judge to adjudicate.' },\n  { rule: 'absolute-claim', severity: 'advisory',\n    re: /\\b(?:guaranteed|never\\s+fails|always\\s+works|100%\\s+accurate|eliminates\\s+all)\\b/gi,\n    why: 'Absolute claim that cannot be supported.' },\n];\n\nfor (const r of RULES) {\n  for (const pair of parts) {\n    const where = pair[0];\n    const hits = String(pair[1] || '').match(r.re);\n    if (!hits) continue;\n    for (const h of hits) {\n      add(r.rule, r.severity, where + ': ' + h, r.why);\n    }\n  }\n}\n\n// Mechanical rulings live here too, so ONE component owns quality.\nif (body.length !== 5) add('structure', 'blocking', body.length + ' body sections', 'Exactly 5 required.');\nif (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');\n\nconst title = (s.seo && s.seo.title) || '';\nif (!title) add('seo-title-missing', 'blocking', '(empty)', 'No SEO title.');\nif (title.length > 60) add('seo-title-length', 'advisory', title, title.length + ' chars, limit 60.');\nif (title && !/(\\bai\\b|automat|radiolog|radiograph|imaging|healthcare)/i.test(title)) {\n  add('seo-title-topic', 'advisory', title, 'Title references neither AI/automation nor radiology.');\n}\n\nconst cta = (s.script && s.script.cta) || '';\nif (!/radiograph/i.test(cta) || !/(\\bAI\\b|practitioner|engineer|developer|automation)/i.test(cta)) {\n  add('weak-cta', 'advisory', cta.slice(0, 160), 'CTA must invite BOTH radiographers and AI practitioners.');\n}\n\nconst kws = Array.isArray(s.pexels_search_keywords) ? s.pexels_search_keywords : [];\nif (kws.length !== 5) add('keywords', 'advisory', kws.length + ' keywords', 'Exactly 5 expected.');\n\nconst blocking = violations.filter((v) => v.severity === 'blocking');\n\nconst judge = {\n  script: s.script,\n  seo: s.seo,\n  research_payload: corpus.slice(0, 24000),\n  deterministic_findings: violations,\n};\n\nconsole.log('editorial checks: ' + words + '/' + target + ' words, ' +\n  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory');\nfor (const v of blocking) console.log('  BLOCKING ' + v.rule + ' -> ' + v.quote);\n\nreturn [{\n  json: {\n    script: s.script,\n    seo: s.seo,\n    pexels_search_keywords: kws,\n    deterministic_violations: violations,\n    deterministic_blocking: blocking.length,\n    word_count: words,\n    word_target: target,\n    judge_payload_json: JSON.stringify(judge),\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a047",
+      "name": "Editorial Verifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4600,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.JUDGE_MODEL, temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Worker · Verifier Prompt').first().json.data }, { role: 'user', content: $json.judge_payload_json } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a048",
+      "name": "Editorial Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4820,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Merges Layer 2 (deterministic) with Layer 3 (judge) and decides.\n// Each node in this gate runs exactly once, so .first() is unambiguous.\nconst checks = $('Editorial Checks').first().json;\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\n\nlet judge = null;\nlet judge_error = null;\ntry {\n  judge = JSON.parse(String(raw).replace(/^\\s*\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`\\s*$/, '').trim());\n} catch (err) {\n  judge_error = err.message;\n}\n\n// A judge that failed to answer must NOT be read as approval. Fail toward\n// caution: an unreadable verdict counts as unverified, not as a pass.\nconst judgeViolations = (judge && Array.isArray(judge.violations) ? judge.violations : [])\n  .map((v) => ({ ...v, source: 'judge' }));\n\n// Advisory deterministic flags the judge explicitly dismissed are dropped;\n// anything it upheld is promoted to a real violation.\nconst upheld = new Set(\n  (judge && Array.isArray(judge.advisory_adjudication) ? judge.advisory_adjudication : [])\n    .filter((a) => a.upheld)\n    .map((a) => String(a.rule))\n);\n\nconst detKept = checks.deterministic_violations.filter(\n  (v) => v.severity === 'blocking' || upheld.has(v.rule)\n);\n\nconst all = [...detKept, ...judgeViolations];\nconst blocking = all.filter((v) => v.severity === 'blocking');\n\nconst verdict = blocking.length === 0 ? 'pass' : 'flagged';\nconst needs_revision = blocking.length > 0;\n\nconsole.log('editorial gate: verdict=' + verdict + ' blocking=' + blocking.length +\n  ' advisory=' + (all.length - blocking.length) + (judge_error ? ' JUDGE_UNPARSEABLE' : ''));\nfor (const v of blocking) console.log('  ' + v.rule + ': ' + String(v.quote).slice(0, 120));\n\nreturn [{\n  json: {\n    script: checks.script,\n    seo: checks.seo,\n    pexels_search_keywords: checks.pexels_search_keywords,\n    word_count: checks.word_count,\n    word_target: checks.word_target,\n    editorial_verdict: verdict,\n    editorial_violations: all,\n    editorial_blocking_count: blocking.length,\n    judge_summary: (judge && judge.summary) || null,\n    judge_error,\n    needs_revision,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a049",
+      "name": "Editorial Checks (Round 2)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4380,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Deterministic editorial checks -- Layer 2.\n// Catches fabrication by FORM: the claim classes this pipeline has no source to\n// support. Validated against fixtures/hallucinated-script.json (the real script\n// from execution 654), which must produce at least 6 blocking hits.\nconst cfg = $('Config').first().json;\nconst s = $input.first().json;\n\nconst body = Array.isArray(s.script && s.script.body) ? s.script.body : [];\nconst parts = [\n  ['hook', (s.script && s.script.hook) || ''],\n  ...body.map((b, i) => ['body' + (i + 1), b]),\n  ['cta', (s.script && s.script.cta) || ''],\n];\nconst fullText = parts.map((p) => String(p[1] || '')).join(' ');\nconst words = fullText.trim() ? fullText.trim().split(/\\s+/).length : 0;\nconst target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);\n\n// There is NO traceability exemption for percentages, and that is deliberate.\n//\n// Two earlier attempts both failed, and the regression test caught both:\n//   1. Exempting any figure whose digits appear in the research payload was\n//      useless -- the payload is full of incidental numbers (view counts, video\n//      ids, years), so \"50\" appeared somewhere and duly licensed \"up to 50%\".\n//   2. Tightening it to percentages-only STILL let \"up to 50%\" through, because\n//      \"50%\" really does appear in the corpus -- inside a competitor's video\n//      transcript.\n//\n// That second failure is the important one. The corpus is competitor YouTube\n// transcripts. A creator saying \"50%\" in their video is not evidence that\n// automation halves your reporting time; it is their marketing claim, unverified.\n// Treating it as a citable source would launder someone else's unsupported\n// number into this channel's voice.\n//\n// So every percentage and every measured outcome is blocked outright. This is\n// narrow: it does not touch ordinary numbers like \"4 hours\", \"5 steps\" or\n// \"400 integrations\", only claim-shaped figures the host cannot stand behind.\nlet corpus = '';\ntry { corpus = String($('Prepare Research Payload').first().json.payload_json || ''); } catch (e) { corpus = ''; }\n\nconst violations = [];\nconst add = (rule, severity, quote, why) => violations.push({\n  rule, severity, quote: String(quote).slice(0, 200), why, source: 'deterministic',\n});\n\nconst RULES = [\n  { rule: 'fabricated-statistic', severity: 'blocking',\n    re: /\\b\\d+(?:\\.\\d+)?\\s*(?:%|percent\\b)/gi,\n    why: 'A percentage the host cannot stand behind. Competitor transcripts are not evidence.' },\n  { rule: 'measured-outcome-claim', severity: 'blocking',\n    re: /\\b(?:a|an)\\s+\\d+(?:\\.\\d+)?\\s*(?:%|percent)?\\s*(?:decrease|increase|reduction|improvement|drop|rise)\\b/gi,\n    why: 'A measured outcome that was never measured.' },\n  { rule: 'first-person-deployment', severity: 'blocking',\n    re: /\\b(?:at|in)\\s+(?:our|my)\\s+(?:facility|hospital|department|trust|clinic|practice|site|unit)\\b|\\bwe\\s+(?:implemented|deployed|rolled\\s+out|installed|introduced)\\b/gi,\n    why: 'A first-person deployment story. The host has not run this.' },\n  { rule: 'unsourced-study-claim', severity: 'blocking',\n    re: /\\b(?:a\\s+study|studies\\s+(?:show|found)|research\\s+(?:shows|found)|according\\s+to\\s+[^.]{0,40}(?:study|paper|trial|report))\\b/gi,\n    why: 'Cites research that is not in the supplied payload.' },\n  // Advisory on purpose: radiologists are a legitimate topic, so a blocking\n  // regex here would fire on correct usage. The judge decides.\n  { rule: 'profession-confusion', severity: 'advisory',\n    re: /\\bradiologists?\\b/gi,\n    why: 'Mentions radiologists; the audience is radiographers. Judge to adjudicate.' },\n  { rule: 'absolute-claim', severity: 'advisory',\n    re: /\\b(?:guaranteed|never\\s+fails|always\\s+works|100%\\s+accurate|eliminates\\s+all)\\b/gi,\n    why: 'Absolute claim that cannot be supported.' },\n];\n\nfor (const r of RULES) {\n  for (const pair of parts) {\n    const where = pair[0];\n    const hits = String(pair[1] || '').match(r.re);\n    if (!hits) continue;\n    for (const h of hits) {\n      add(r.rule, r.severity, where + ': ' + h, r.why);\n    }\n  }\n}\n\n// Mechanical rulings live here too, so ONE component owns quality.\nif (body.length !== 5) add('structure', 'blocking', body.length + ' body sections', 'Exactly 5 required.');\nif (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');\n\nconst title = (s.seo && s.seo.title) || '';\nif (!title) add('seo-title-missing', 'blocking', '(empty)', 'No SEO title.');\nif (title.length > 60) add('seo-title-length', 'advisory', title, title.length + ' chars, limit 60.');\nif (title && !/(\\bai\\b|automat|radiolog|radiograph|imaging|healthcare)/i.test(title)) {\n  add('seo-title-topic', 'advisory', title, 'Title references neither AI/automation nor radiology.');\n}\n\nconst cta = (s.script && s.script.cta) || '';\nif (!/radiograph/i.test(cta) || !/(\\bAI\\b|practitioner|engineer|developer|automation)/i.test(cta)) {\n  add('weak-cta', 'advisory', cta.slice(0, 160), 'CTA must invite BOTH radiographers and AI practitioners.');\n}\n\nconst kws = Array.isArray(s.pexels_search_keywords) ? s.pexels_search_keywords : [];\nif (kws.length !== 5) add('keywords', 'advisory', kws.length + ' keywords', 'Exactly 5 expected.');\n\nconst blocking = violations.filter((v) => v.severity === 'blocking');\n\nconst judge = {\n  script: s.script,\n  seo: s.seo,\n  research_payload: corpus.slice(0, 24000),\n  deterministic_findings: violations,\n};\n\nconsole.log('editorial checks: ' + words + '/' + target + ' words, ' +\n  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory');\nfor (const v of blocking) console.log('  BLOCKING ' + v.rule + ' -> ' + v.quote);\n\nreturn [{\n  json: {\n    script: s.script,\n    seo: s.seo,\n    pexels_search_keywords: kws,\n    deterministic_violations: violations,\n    deterministic_blocking: blocking.length,\n    word_count: words,\n    word_target: target,\n    judge_payload_json: JSON.stringify(judge),\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a050",
+      "name": "Editorial Verifier (Round 2)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4600,
+        700
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.JUDGE_MODEL, temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Worker · Verifier Prompt').first().json.data }, { role: 'user', content: $json.judge_payload_json } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a051",
+      "name": "Editorial Gate (Round 2)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4820,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Merges Layer 2 (deterministic) with Layer 3 (judge) and decides.\n// Each node in this gate runs exactly once, so .first() is unambiguous.\nconst checks = $('Editorial Checks (Round 2)').first().json;\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\n\nlet judge = null;\nlet judge_error = null;\ntry {\n  judge = JSON.parse(String(raw).replace(/^\\s*\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`\\s*$/, '').trim());\n} catch (err) {\n  judge_error = err.message;\n}\n\n// A judge that failed to answer must NOT be read as approval. Fail toward\n// caution: an unreadable verdict counts as unverified, not as a pass.\nconst judgeViolations = (judge && Array.isArray(judge.violations) ? judge.violations : [])\n  .map((v) => ({ ...v, source: 'judge' }));\n\n// Advisory deterministic flags the judge explicitly dismissed are dropped;\n// anything it upheld is promoted to a real violation.\nconst upheld = new Set(\n  (judge && Array.isArray(judge.advisory_adjudication) ? judge.advisory_adjudication : [])\n    .filter((a) => a.upheld)\n    .map((a) => String(a.rule))\n);\n\nconst detKept = checks.deterministic_violations.filter(\n  (v) => v.severity === 'blocking' || upheld.has(v.rule)\n);\n\nconst all = [...detKept, ...judgeViolations];\nconst blocking = all.filter((v) => v.severity === 'blocking');\n\nconst verdict = blocking.length === 0 ? 'pass' : 'flagged';\nconst needs_revision = false;\n\nconsole.log('editorial gate: verdict=' + verdict + ' blocking=' + blocking.length +\n  ' advisory=' + (all.length - blocking.length) + (judge_error ? ' JUDGE_UNPARSEABLE' : ''));\nfor (const v of blocking) console.log('  ' + v.rule + ': ' + String(v.quote).slice(0, 120));\n\nreturn [{\n  json: {\n    script: checks.script,\n    seo: checks.seo,\n    pexels_search_keywords: checks.pexels_search_keywords,\n    word_count: checks.word_count,\n    word_target: checks.word_target,\n    editorial_verdict: verdict,\n    editorial_violations: all,\n    editorial_blocking_count: blocking.length,\n    judge_summary: (judge && judge.summary) || null,\n    judge_error,\n    needs_revision,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a053",
+      "name": "Needs Revision?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5040,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a052",
+              "leftValue": "={{ $json.needs_revision }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a054",
+      "name": "Prepare Revision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Hands the writer the EXACT offending quotes and the required fix. A\n// generic \"try again\" produces the same fabrications with different numbers.\nconst gate = $input.first().json;\nconst blocking = gate.editorial_violations.filter((v) => v.severity === 'blocking');\n\nconst lines = blocking.map((v, i) =>\n  (i + 1) + '. [' + v.rule + '] ' + JSON.stringify(String(v.quote)) +\n  '\\n   WHY: ' + (v.why || 'unsupported') +\n  '\\n   FIX: ' + (v.fix || 'Remove the claim, or rewrite it as an explicit hypothetical, or replace it with a concrete build step that is true by construction.')\n);\n\nconst instruction = [\n  'Your previous script was REJECTED by the editorial gate. Fix every violation below and return the COMPLETE corrected script.',\n  '',\n  'VIOLATIONS:',\n  ...lines,\n  '',\n  'HOW TO FIX, in order of preference:',\n  '  1. Delete the claim entirely. The script does not need it.',\n  '  2. Replace it with a concrete BUILD step that is true by construction --',\n  '     the actual tool, the actual node, the actual sequence. This is what the',\n  '     audience wants anyway.',\n  '  3. Reframe it as an EXPLICIT hypothetical (\"suppose your department...\").',\n  '',\n  'Do NOT swap one invented figure for another. Do NOT keep the claim and soften it',\n  'with \"roughly\" or \"around\" -- an invented number is invented at any precision.',\n  'Keep everything that was NOT flagged, and hold the same total length.',\n].join('\\n');\n\nreturn [{\n  json: {\n    payload_json: JSON.stringify({\n      previous_script: gate.script,\n      previous_seo: gate.seo,\n      violations: blocking,\n      instruction,\n      original_request: JSON.parse($('Prepare Script Payload').first().json.payload_json),\n    }),\n    system_prompt: $('Worker · Script Prompt').first().json.data,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a055",
+      "name": "OpenRouter · Script Revise",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5260,
+        700
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.WRITER_MODEL, temperature: 0.4, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $json.system_prompt }, { role: 'user', content: $json.payload_json } ] }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a056",
+      "name": "Parse Script (Revised)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5480,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Tolerant parse: strips accidental markdown fences before JSON.parse.\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\nlet ok = true;\nlet parsed = null;\nlet parse_error = null;\nlet word_count = null;\nlet word_target = null;\n\ntry {\n  const cleaned = String(raw)\n    .replace(/^\\s*```(?:json)?/i, '')\n    .replace(/```\\s*$/, '')\n    .trim();\n  parsed = JSON.parse(cleaned);\n  if (!(parsed && parsed.script && parsed.script.hook && Array.isArray(parsed.script.body) && parsed.seo && parsed.seo.title)) {\n    ok = false;\n    parse_error = 'revised script JSON parsed but is missing required fields';\n  }\n} catch (err) {\n  ok = false;\n  parse_error = err.message;\n}\n\n\nreturn [{\n  json: { ok, parsed, parse_error, word_count, word_target, raw: ok ? undefined : String(raw).slice(0, 2000) },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a057",
+      "name": "Revision Parsed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5700,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// If the revision came back unparseable, fall back to the ORIGINAL script\n// rather than losing the run. It is flagged either way, and the gate's second\n// cycle will re-evaluate whichever version proceeds.\nconst j = $input.first().json;\nif (j.ok && j.parsed) return [{ json: j.parsed, pairedItem: { item: 0 } }];\n\nconsole.log('revision unparseable (' + (j.parse_error || 'unknown') + ') - falling back to the original script');\nconst prev = $('Editorial Gate').first().json;\nreturn [{\n  json: { script: prev.script, seo: prev.seo, pexels_search_keywords: prev.pexels_search_keywords },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a058",
+      "name": "Script Approved",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5920,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Single join point for the clean path and the revised path. Everything\n// downstream reads from HERE, never from Script Ready, so no consumer can\n// accidentally pick up the unreviewed draft.\nconst g = $input.first().json;\n\nconst blocking = (g.editorial_violations || []).filter((v) => v.severity === 'blocking');\nconst s = g.script;\n\nif (!s || !s.hook) throw new Error('Script Approved: no script survived the editorial gate.');\n\nconsole.log('APPROVED verdict=' + g.editorial_verdict + ' blocking=' + blocking.length +\n  ' words=' + g.word_count + '/' + g.word_target);\n\nreturn [{\n  json: {\n    script: s,\n    seo: g.seo,\n    pexels_search_keywords: g.pexels_search_keywords,\n    word_count: g.word_count,\n    word_target: g.word_target,\n    editorial_verdict: g.editorial_verdict,\n    editorial_violations: g.editorial_violations || [],\n    editorial_blocking_count: blocking.length,\n    judge_summary: g.judge_summary || null,\n    judge_error: g.judge_error || null,\n    revision_rounds: $('Editorial Gate').first().json.needs_revision ? 1 : 0,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a059",
+      "name": "Split Keywords",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6140,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const s = $('Script Approved').first().json;\nconst kws = (s.pexels_search_keywords || [])\n  .map((k) => String(k || '').trim())\n  .filter(Boolean)\n  .slice(0, 5);\n\n// A model that returned no keywords should not sink a finished script.\nif (kws.length === 0) {\n  kws.push('hospital technology', 'medical scan', 'computer screen code');\n}\n\nreturn kws.map((keyword) => ({ json: { keyword }, pairedItem: { item: 0 } }));"
+      }
+    },
+    {
+      "id": "a060",
+      "name": "Pexels · Search Footage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4600,
+        300
+      ],
+      "parameters": {
+        "url": "https://api.pexels.com/videos/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.keyword }}"
+            },
+            {
+              "name": "per_page",
+              "value": "2"
+            },
+            {
+              "name": "orientation",
+              "value": "landscape"
+            },
+            {
+              "name": "min_duration",
+              "value": "8"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a061",
+      "name": "Collect Footage URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4820,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Picks the SMALLEST mp4 rendition that still meets the 1080p output, not\n// the largest available. Everything is downscaled to 1920x1080 anyway, so\n// pulling a 4K rendition costs download time and a much slower decode for\n// no visible gain. Falls back to the largest available if nothing reaches 1080p.\nconst urls = [];\nfor (const item of $input.all()) {\n  for (const video of item.json?.videos || []) {\n    const files = (video.video_files || [])\n      .filter((f) => f.file_type === 'video/mp4' && f.link)\n      .sort((a, b) => (a.width || 0) - (b.width || 0));\n    const best =\n      files.find((f) => (f.width || 0) >= 1920) ||\n      files.find((f) => (f.width || 0) >= 1280) ||\n      files[files.length - 1];\n    if (best) urls.push(best.link);\n  }\n}\n\nconst footage_urls = [...new Set(urls)].slice(0, 10);\n\nconst s = $('Script Approved').first().json;\nconst body = Array.isArray(s.script.body) ? s.script.body : [];\nconst full_script = [s.script.hook, ...body, s.script.cta]\n  .map((p) => String(p || '').trim())\n  .filter(Boolean)\n  .join(' ');\n\nif (!full_script) throw new Error('Script assembled to an empty string.');\n\nreturn [{\n  json: {\n    footage_urls,\n    footage_count: footage_urls.length,\n    full_script,\n    word_count: full_script.split(/\\s+/).length,\n    title: s.seo.title,\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a062",
+      "name": "Worker · Render Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5040,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/render",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ script_text: $json.full_script, footage_urls: $json.footage_urls, title: $json.title }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a063",
+      "name": "Wait · Render Poll",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5260,
+        300
+      ],
+      "parameters": {
+        "amount": 20,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "a064",
+      "name": "Worker · Render Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5480,
+        300
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/jobs/{{ $('Worker · Render Video').first().json.job_id }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "a067",
+      "name": "Switch · Render State",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        5700,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a065",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "done",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "done"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a066",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "failed"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "a068",
+      "name": "Render Failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        5700,
+        620
+      ],
+      "parameters": {
+        "errorMessage": "={{ \"Media worker render failed for job \" + $json.job_id + \": \" + ($json.error || \"unknown error\") }}"
+      }
+    },
+    {
+      "id": "a069",
+      "name": "Worker · Download Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5920,
+        180
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/jobs/{{ $('Worker · Render Video').first().json.job_id }}/video",
+        "options": {
+          "timeout": 600000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a070",
+      "name": "YouTube · Upload Video",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [
+        6140,
+        180
+      ],
+      "parameters": {
+        "resource": "video",
+        "operation": "upload",
+        "title": "={{ $('Script Approved').first().json.seo.title }}",
+        "categoryId": "27",
+        "regionCode": "US",
+        "binaryProperty": "data",
+        "options": {
+          "description": "={{ $('Script Approved').first().json.editorial_blocking_count > 0 ? ('[UNVERIFIED CLAIMS - REVIEW BEFORE PUBLISHING]\\n' +    $('Script Approved').first().json.editorial_violations      .filter(v => v.severity === 'blocking')      .map(v => '- ' + v.rule + ': ' + v.quote).join('\\n') +    '\\n\\n' + $('Script Approved').first().json.seo.description) : $('Script Approved').first().json.seo.description }}",
+          "tags": "={{ ($('Script Approved').first().json.seo.tags || []).join(',') }}",
+          "privacyStatus": "={{ $('Script Approved').first().json.editorial_blocking_count > 0 ? 'private' : $('Config').first().json.PRIVACY_STATUS }}"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "a071",
+      "name": "Worker · Download Thumbnail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        6360,
+        180
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/jobs/{{ $('Worker · Render Video').first().json.job_id }}/thumbnail",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a072",
+      "name": "YouTube · Set Thumbnail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        6580,
+        180
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.googleapis.com/youtube/v3/thumbnails/set?videoId={{ $('YouTube · Upload Video').first().json.uploadId || $('YouTube · Upload Video').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a073",
+      "name": "Worker · Cleanup Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        6800,
+        180
+      ],
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/jobs/{{ $('Worker · Render Video').first().json.job_id }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a074",
+      "name": "Final Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7020,
+        180
+      ],
+      "parameters": {
+        "jsCode": "// Rebuilt from scratch in a Code node rather than a Set node: several\n// upstream nodes run with onError 'continueRegularOutput', and that flag rides\n// along on the item, diverting later nodes that have an error output.\nconst research = $('Research Ready').first().json;\nconst script = $('Script Approved').first().json;\nconst ranked = $('Rank & Balance Domains').first().json;\nconst prep = $('Prepare Research Payload').first().json;\nconst footage = $('Collect Footage URLs').first().json;\nconst upload = $('YouTube · Upload Video').first().json;\n\n// The YouTube node publishes the new video id as 'uploadId', not 'id'.\nconst videoId = upload.uploadId || upload.id;\n\nreturn [{\n  json: {\n    video_url: videoId ? 'https://youtube.com/watch?v=' + videoId : null,\n    video_id: videoId ?? null,\n    privacy_status: $('Config').first().json.PRIVACY_STATUS,\n    title: script.seo.title,\n    topic: research.recommended_topic,\n    unique_angle: research.unique_angle,\n    intersection_gap: research.intersection_gap,\n    why_this_topic_wins: research.why_this_topic_wins,\n    ai_channels_researched: 3,\n    radiology_channels_researched: 2,\n    videos_analyzed: ranked.videos_analyzed,\n    transcripts_used: prep.transcripts_used,\n    transcripts_available: prep.transcripts_available,\n    footage_clips_used: footage.footage_count,\n    script_word_count: script.word_count ?? footage.word_count,\n    script_word_target: script.word_target ?? null,\n\n    // Editorial gate outcome. 'flagged' means blocking violations survived the\n    // revision round and the video was uploaded private with a warning\n    // prepended to its description -- read editorial_violations before\n    // publishing anything.\n    editorial_verdict: script.editorial_verdict ?? null,\n    editorial_blocking_count: script.editorial_blocking_count ?? null,\n    editorial_violations: script.editorial_violations ?? [],\n    judge_summary: script.judge_summary ?? null,\n    judge_error: script.judge_error ?? null,\n    revision_rounds: script.revision_rounds ?? 0,\n\n    timestamp: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    },
+    {
+      "id": "a075",
+      "name": "Upload Failed · Keep Artifacts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6140,
+        460
+      ],
+      "parameters": {
+        "jsCode": "// Deliberately does NOT call the worker's cleanup endpoint, so\n// final_video.mp4 and thumbnail.jpg survive on the worker volume for\n// post-mortem. Recover them with:\n//   curl -o video.mp4 http://localhost:8099/jobs/<job_id>/video\nconst jobId = $('Worker · Render Video').first().json.job_id;\nconst err = $input.first().json.error || $input.first().error || {};\n\nreturn [{\n  json: {\n    upload_failed: true,\n    job_id: jobId,\n    artifacts_kept: true,\n    recover_video: 'http://localhost:8099/jobs/' + jobId + '/video',\n    recover_thumbnail: 'http://localhost:8099/jobs/' + jobId + '/thumbnail',\n    title: $('Script Approved').first().json.seo.title,\n    topic: $('Research Ready').first().json.recommended_topic,\n    error: typeof err === 'string' ? err : err.message || JSON.stringify(err).slice(0, 800),\n    timestamp: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+      }
+    }
+  ],
+  "connections": {
+    "Editorial Checks": {
+      "main": [
+        [
+          {
+            "node": "Editorial Verifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Editorial Verifier": {
+      "main": [
+        [
+          {
+            "node": "Editorial Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Editorial Checks (Round 2)": {
+      "main": [
+        [
+          {
+            "node": "Editorial Verifier (Round 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Editorial Verifier (Round 2)": {
+      "main": [
+        [
+          {
+            "node": "Editorial Gate (Round 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule · Every 3 Days 09:00": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Build Channel List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Channel List": {
+      "main": [
+        [
+          {
+            "node": "YT · Search Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YT · Search Channel": {
+      "main": [
+        [
+          {
+            "node": "Flatten & Tag Domain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten & Tag Domain": {
+      "main": [
+        [
+          {
+            "node": "YT · Batch Statistics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YT · Batch Statistics": {
+      "main": [
+        [
+          {
+            "node": "Rank & Balance Domains",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rank & Balance Domains": {
+      "main": [
+        [
+          {
+            "node": "Worker · Fetch Transcripts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Fetch Transcripts": {
+      "main": [
+        [
+          {
+            "node": "Worker · Research Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Research Prompt": {
+      "main": [
+        [
+          {
+            "node": "Prepare Research Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Research Payload": {
+      "main": [
+        [
+          {
+            "node": "OpenRouter · Research",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter · Research": {
+      "main": [
+        [
+          {
+            "node": "Parse Research",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Research": {
+      "main": [
+        [
+          {
+            "node": "Research JSON OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research JSON OK?": {
+      "main": [
+        [
+          {
+            "node": "Research Ready",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "OpenRouter · Research Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter · Research Retry": {
+      "main": [
+        [
+          {
+            "node": "Parse Research (Retry)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Research (Retry)": {
+      "main": [
+        [
+          {
+            "node": "Research Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research Ready": {
+      "main": [
+        [
+          {
+            "node": "Worker · Script Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Script Prompt": {
+      "main": [
+        [
+          {
+            "node": "Prepare Script Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Script Payload": {
+      "main": [
+        [
+          {
+            "node": "OpenRouter · Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter · Script": {
+      "main": [
+        [
+          {
+            "node": "Parse Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Script": {
+      "main": [
+        [
+          {
+            "node": "Script JSON OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Script JSON OK?": {
+      "main": [
+        [
+          {
+            "node": "Script Ready",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "OpenRouter · Script Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter · Script Retry": {
+      "main": [
+        [
+          {
+            "node": "Parse Script (Retry)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Script (Retry)": {
+      "main": [
+        [
+          {
+            "node": "Script Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Script Ready": {
+      "main": [
+        [
+          {
+            "node": "Worker · Verifier Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Verifier Prompt": {
+      "main": [
+        [
+          {
+            "node": "Editorial Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Editorial Gate": {
+      "main": [
+        [
+          {
+            "node": "Needs Revision?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Revision?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Revision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Script Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Revision": {
+      "main": [
+        [
+          {
+            "node": "OpenRouter · Script Revise",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter · Script Revise": {
+      "main": [
+        [
+          {
+            "node": "Parse Script (Revised)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Script (Revised)": {
+      "main": [
+        [
+          {
+            "node": "Revision Parsed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revision Parsed": {
+      "main": [
+        [
+          {
+            "node": "Editorial Checks (Round 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Editorial Gate (Round 2)": {
+      "main": [
+        [
+          {
+            "node": "Script Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Script Approved": {
+      "main": [
+        [
+          {
+            "node": "Split Keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Keywords": {
+      "main": [
+        [
+          {
+            "node": "Pexels · Search Footage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pexels · Search Footage": {
+      "main": [
+        [
+          {
+            "node": "Collect Footage URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Footage URLs": {
+      "main": [
+        [
+          {
+            "node": "Worker · Render Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Render Video": {
+      "main": [
+        [
+          {
+            "node": "Wait · Render Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait · Render Poll": {
+      "main": [
+        [
+          {
+            "node": "Worker · Render Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Render Status": {
+      "main": [
+        [
+          {
+            "node": "Switch · Render State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch · Render State": {
+      "main": [
+        [
+          {
+            "node": "Worker · Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Render Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait · Render Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Download Video": {
+      "main": [
+        [
+          {
+            "node": "YouTube · Upload Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube · Upload Video": {
+      "main": [
+        [
+          {
+            "node": "Worker · Download Thumbnail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upload Failed · Keep Artifacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Download Thumbnail": {
+      "main": [
+        [
+          {
+            "node": "YouTube · Set Thumbnail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube · Set Thumbnail": {
+      "main": [
+        [
+          {
+            "node": "Worker · Cleanup Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker · Cleanup Job": {
+      "main": [
+        [
+          {
+            "node": "Final Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 5400
+  }
+}
