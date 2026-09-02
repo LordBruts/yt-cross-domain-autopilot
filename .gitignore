@@ -1,0 +1,34 @@
+# Secrets never live in this folder — they are in the n8n credential store.
+# scripts/create-credentials.js takes them from the environment, never from a file.
+.env
+.env.local
+
+# deploy.config.json holds credential IDs and .wfid holds the workflow ID. Both are
+# handles into one particular n8n instance, so they are local, not shared.
+# deploy.config.example.json is the template to copy.
+deploy.config.json
+.wfid
+
+# Build noise
+worker/build*.log
+worker/up*.log
+
+# Python worker
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Intermediates
+.tmp/
+*.tmp
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/

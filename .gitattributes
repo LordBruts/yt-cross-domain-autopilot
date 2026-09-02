@@ -1,0 +1,11 @@
+# Text is stored with LF and checked out as-is. The Python worker, the shell-free
+# ffmpeg argv lists and the workflow JSON must not gain CRs on a Windows checkout.
+* text=auto eol=lf
+
+# Fixtures and media are binary. Git guessing "text" on these corrupts them on
+# checkout, which then looks like a broken parser rather than a broken checkout.
+*.pdf  binary
+*.mp4  binary
+*.mp3  binary
+*.png  binary
+*.jpg  binary
