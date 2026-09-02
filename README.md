@@ -7,7 +7,8 @@ YouTube. No manual trigger, no human input per run.
 The **intersection is the deliverable**. If the output is a generic AI tutorial, or a generic
 radiology lesson, the run has failed even when every node is green.
 
-**Status: built, deployed, run end to end. An editorial gate has since been added. Left inactive.**
+**Status: built, deployed, run end to end, and now scheduled and active.** An editorial gate has
+since been added; its LLM layer has not yet run live.
 
 Execution 654 completed in 9.2 minutes and uploaded a real private video. It researched 50 videos
 across the 5 channels, fetched 6 transcripts, produced a cross-domain topic, wrote the script and
@@ -28,7 +29,10 @@ That is what the [Editorial Gate](#the-editorial-gate) now exists to prevent. Al
   [youtube.com/verify](https://www.youtube.com/verify); no workflow change will fix it).
 
 The gate is **deployed but not yet exercised on a live run** — its deterministic layer is covered by
-tests, its LLM layer is not. The schedule is **inactive**, and uploads are `private`.
+tests, its LLM layer is not. The schedule is now **active** (every 3 days at 09:00) and uploads are
+`private`, so the first unattended run is also the gate's first real test. Read the description of
+whatever it uploads: a script with surviving blocking violations is uploaded anyway, flagged, and
+forced to `private` regardless of `PRIVACY_STATUS`.
 
 ---
 
@@ -77,14 +81,17 @@ fails with `bad address`.
 | Path | What it is |
 |---|---|
 | `workflow.json` | The export, importable via n8n's *Import from File*. Carries **no** credentials blocks — those are instance-specific and attached at deploy time. |
-| `prompts/*.txt` | The two system prompts, served to the workflow over HTTP at run time rather than baked into node parameters. |
+| `prompts/*.txt` | The three system prompts (research, script, verifier), served to the workflow over HTTP at run time rather than baked into node parameters. Editing one needs a worker restart, not a redeploy. |
 | `scripts/build-workflow.js` | Generates `workflow.json`. **Edit this, not the JSON.** |
 | `scripts/deploy.js` | Create/update on the instance. `--verify` prints the live wiring. |
-| `scripts/create-credentials.js` | Creates the three credentials from env vars; validates the YouTube token against Google first. |
+| `scripts/create-credentials.js` | Creates the four credentials from env vars; validates the YouTube token against Google first. |
 | `scripts/run-once.js` | Triggers one full run of this schedule-only workflow. `--restore` undoes a crashed graft. |
+| `scripts/test-editorial-checks.js` | Regression suite for the gate, run against the generated `workflow.json`. |
+| `fixtures/` | The real hallucinated script from execution 654, used by that suite. |
 | `worker/` | The sidecar: `app.py`, `Dockerfile`, `docker-compose.yml`, pinned `requirements.txt`. |
 | `deploy.config.json` | Credential **IDs** only, no secrets. Gitignored (instance-specific). |
 | `.wfid` | The deployed workflow ID. Gitignored. |
+| `deploy.config.example.json` | Template for the above. |
 
 ---
 
@@ -142,8 +149,12 @@ title ≤ 60 chars referencing AI or radiology · ≥ 70% of target length · CT
 
 ### Layer 3 — the judge (`Editorial Verifier`)
 
-A **different vendor's** model (`openai/gpt-4o` judging `anthropic/claude-sonnet-4.5`'s writing — a
-judge sharing the writer's blind spots rubber-stamps them). It receives the script, the research
+A **different vendor's** model — currently `openai/gpt-5.6-luna` judging
+`anthropic/claude-sonnet-4.5`'s writing. This is the gate's central property, not a preference: a
+judge sharing the writer's blind spots rubber-stamps them, so `WRITER_MODEL` and `JUDGE_MODEL` must
+never be set to the same vendor. Doing so disables this layer while every test still passes.
+(`RESEARCH_MODEL` may share a vendor with either — it only summarises competitor content and
+asserts nothing that reaches the video.) It receives the script, the research
 payload as the only permitted ground truth, and the deterministic findings to adjudicate. It rules
 on what regex cannot reach: unsupported assertions, whether the script is genuinely cross-domain,
 vague use cases, scope-of-practice errors, derivative content. An unparseable verdict counts as
@@ -325,6 +336,24 @@ node that does not exist.
 To import by hand instead: n8n → **Workflows** → **Import from File** → `workflow.json`, then
 reattach the four credentials (they are deliberately absent from the committed export).
 
+**Pointing the scripts at your instance.** `deploy.js`, `run-once.js` and `create-credentials.js`
+read `N8N_API_URL` and `N8N_API_KEY` from the environment:
+
+```sh
+N8N_API_URL=http://localhost:5678 N8N_API_KEY=... node scripts/deploy.js
+```
+
+Without them they fall back to a `.mcp.json` two directories up, which exists only in the builder
+folder this was developed in. In a standalone clone, set the two variables.
+
+**One setting the API cannot carry.** `workflow.json` declares
+`settings.binaryMode: "separate"`, which keeps the ~115 MB rendered video on the filesystem instead
+of inside the execution record. The public REST API rejects that property outright
+(`settings must NOT have additional properties`), so `deploy.js` strips it from the payload and n8n
+preserves whatever the instance already had. On a **first** deploy to a fresh instance it will not
+be set — turn it on in the workflow's Settings panel, or the first render will push a very large
+binary through the database.
+
 ### 4. Configure
 
 Open the **Config** node. Everything non-secret lives there, editable in the UI with no restart:
@@ -336,9 +365,14 @@ Open the **Config** node. Everything non-secret lives there, editable in the UI 
 | `CHANNEL_*_DOMAIN` | `AI automation` / `radiology/healthcare` |
 | `NICHE_CONTEXT`, `TARGET_AUDIENCE` | as specified |
 | `VIDEO_LENGTH_MINUTES` | `8` |
-| `LLM_MODEL` | `openai/gpt-4o-mini` |
+| `RESEARCH_MODEL` | `openai/gpt-5.6-luna` |
+| `WRITER_MODEL` | `anthropic/claude-sonnet-4.5` |
+| `JUDGE_MODEL` | `openai/gpt-5.6-luna` |
 | `MEDIA_WORKER_URL` | `http://host.docker.internal:8099` |
 | `PRIVACY_STATUS` | `private` |
+
+The three model fields replaced a single `LLM_MODEL`. Keep `WRITER_MODEL` and `JUDGE_MODEL` on
+different vendors — see [the judge](#layer-3--the-judge-editorial-verifier).
 
 ### 5. Run it once by hand
 
@@ -437,12 +471,19 @@ editing a prompt does not mean redeploying the workflow.
 
 | Item | Cost |
 |---|---|
-| Research call (`gpt-4o-mini`, ~12k in / ~600 out) | ~$0.002 |
-| Script call (`gpt-4o-mini`, ~2k in / ~1.6k out) | ~$0.001 |
+| Research call (`gpt-5.6-luna`, ~12k in / ~600 out) | ~$0.003 |
+| Script call (`claude-sonnet-4.5`, ~2k in / ~2.5k out) | ~$0.04 |
+| Judge call (`gpt-5.6-luna`, ~10k in / ~800 out) | ~$0.003 |
 | edge-tts voiceover | free, no account |
 | Pexels footage | free |
 | YouTube Data API | free within quota |
-| **Total** | **~$0.003** |
+| **Total, clean first pass** | **~$0.05** |
+| **Total, one revision round** | **~$0.09** |
+
+The script call dominates, and it is the one call worth paying for — see the length problem under
+[Troubleshooting](#troubleshooting). The judge is cheap because
+`gpt-5.6-luna` is an order of magnitude cheaper per token than the writer; a weak judge would be
+false economy, but a cheap one from a different vendor is not.
 
 YouTube quota, against a 10,000/day default:
 
@@ -572,24 +613,26 @@ curl -s -X POST http://localhost:8099/transcripts \
 Microsoft's endpoint, which now requires a `Sec-MS-GEC` token those versions do not send. Pinned to
 `edge-tts==7.2.8`, which works. If it returns, upgrade the pin rather than debugging the audio.
 
-**The video is much shorter than 8 minutes** — `gpt-4o-mini` reliably under-writes. On the first
-live run it returned **336 words against a ~1040-word target**, producing 2 min 23 s of video
+**The video is much shorter than 8 minutes** — small models reliably under-write. On the first live
+run `gpt-4o-mini` returned **336 words against a ~1040-word target**, producing 2 min 23 s of video
 instead of 8 minutes. The content was on-topic and correctly cross-domain; it was simply a third of
 the requested length.
 
-Two mitigations are in place:
+Three mitigations are in place:
 
-- The script instruction now sets a **per-section word budget** ("each of the 5 body sections:
-  178 words minimum") rather than one total, and states that a short script will be regenerated.
-  Per-section targets control LLM length far better than a single overall number.
-- `Parse Script` **enforces** it: a script under 70% of target is treated as a rejection and routed
-  through the existing retry branch. If the retry is still short the run proceeds anyway — shipping
-  a slightly short video beats discarding a whole run's research — and `Final Log` reports
-  `script_word_count`, `script_word_target` and `script_length_warning`.
+- The script instruction sets a **per-section word budget** ("each of the 5 body sections: 178 words
+  minimum") rather than one total, and states that a short script will be regenerated. Per-section
+  targets control LLM length far better than a single overall number.
+- **`Editorial Checks` enforces it**, alongside every other ruling, so one component owns quality
+  and there is a single threshold rather than two that drift apart. A script under 70% of target is
+  flagged. If it is still short after the revision round the run proceeds anyway — shipping a
+  slightly short video beats discarding a whole run's research — and `Final Log` reports
+  `script_word_count` and `script_word_target`.
+- `WRITER_MODEL` is `anthropic/claude-sonnet-4.5`. This is the main reason the per-run cost is
+  ~$0.05 rather than fractions of a cent, and it is the right place to spend it.
 
-If videos are still consistently short, raise `LLM_MODEL` in the Config node to a stronger model
-(`openai/gpt-4o`, `anthropic/claude-sonnet-4.5`). Cost per run is fractions of a cent either way;
-the script call is only ~2k in / ~1.6k out.
+**Do not "save money" by pointing `WRITER_MODEL` at the judge's model.** It would collapse the
+cross-vendor separation the gate depends on, and nothing in the test suite would fail.
 
 ---
 
@@ -600,6 +643,7 @@ Uploads default to `private`. Two things to know before changing that:
 - **YouTube requires disclosure of synthetic/AI-generated content.** You make that declaration in
   YouTube Studio when publishing. Setting `PRIVACY_STATUS` to `public` skips the point at which a
   human would make it.
-- The pipeline has no quality gate. It cannot tell a genuine cross-domain insight from a plausible
-  sentence about one, and `gpt-4o-mini` at temperature 0.7 will occasionally produce the latter.
+- The [editorial gate](#the-editorial-gate) blocks fabricated claims; it does not certify that the
+  script is *good*. Telling a genuine cross-domain insight from a plausible sentence about one is
+  still a human judgement, and a writer at temperature 0.7 will occasionally produce the latter.
   Reviewing before publishing is the whole reason `private` is the default.

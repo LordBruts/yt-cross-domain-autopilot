@@ -118,13 +118,19 @@ const cfgFields = [
   ],
   ['VIDEO_LENGTH_MINUTES', 8, 'number'],
   ['MEDIA_WORKER_URL', 'http://host.docker.internal:8099', 'string'],
-  // Writer and judge are deliberately DIFFERENT vendors. A judge that shares
-  // the writer's blind spots rubber-stamps its failure modes -- and on the
-  // first live run gpt-4o-mini invented a "30% decrease at our facility"
-  // without hesitation, so it is not fit to police itself.
-  ['RESEARCH_MODEL', 'anthropic/claude-sonnet-4.5', 'string'],
+  // WRITER_MODEL and JUDGE_MODEL must stay on DIFFERENT vendors. This is the
+  // gate's central property, not a preference: a judge sharing the writer's
+  // blind spots rubber-stamps its failure modes. On the first live run
+  // gpt-4o-mini invented a "30% decrease at our facility" without hesitation,
+  // so a model of that family is not fit to police its own output. Changing
+  // either of these to match the other silently disables the third layer while
+  // every test still passes.
+  //
+  // RESEARCH_MODEL may share a vendor with either -- it only summarises
+  // competitor content and asserts nothing that reaches the video.
+  ['RESEARCH_MODEL', 'openai/gpt-5.6-luna', 'string'],
   ['WRITER_MODEL', 'anthropic/claude-sonnet-4.5', 'string'],
-  ['JUDGE_MODEL', 'openai/gpt-4o', 'string'],
+  ['JUDGE_MODEL', 'openai/gpt-5.6-luna', 'string'],
   ['PRIVACY_STATUS', 'private', 'string'],
 ];
 
@@ -1431,7 +1437,13 @@ const workflow = {
   name: 'YT Cross-Domain Autopilot — AI × Radiology',
   nodes,
   connections,
-  settings: { executionOrder: 'v1', executionTimeout: 5400 },
+  // binaryMode 'separate' keeps the rendered video on the filesystem instead of
+  // in the execution record -- a ~115 MB item through the database otherwise.
+  // The public REST API REJECTS this property (`settings must NOT have
+  // additional properties`) even though the instance stores it happily, so
+  // deploy.js strips it from the PUT payload. It is recorded here because the
+  // export should describe the workflow that is actually deployed.
+  settings: { executionOrder: 'v1', executionTimeout: 5400, binaryMode: 'separate' },
 };
 
 const serialized = JSON.stringify(workflow, null, 2);

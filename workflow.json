@@ -122,7 +122,7 @@
             {
               "id": "a016",
               "name": "RESEARCH_MODEL",
-              "value": "anthropic/claude-sonnet-4.5",
+              "value": "openai/gpt-5.6-luna",
               "type": "string"
             },
             {
@@ -134,7 +134,7 @@
             {
               "id": "a018",
               "name": "JUDGE_MODEL",
-              "value": "openai/gpt-4o",
+              "value": "openai/gpt-5.6-luna",
               "type": "string"
             },
             {
@@ -1762,6 +1762,7 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "executionTimeout": 5400
+    "executionTimeout": 5400,
+    "binaryMode": "separate"
   }
 }

@@ -43,6 +43,15 @@ function n8nConfig() {
   if (process.env.N8N_API_URL && process.env.N8N_API_KEY) {
     return { url: process.env.N8N_API_URL, key: process.env.N8N_API_KEY };
   }
+  // Falls back to the MCP config of the builder folder this was developed in.
+  // That path does not exist in a standalone clone, so say what to set rather
+  // than throwing ENOENT at a reader who has never heard of .mcp.json.
+  if (!fs.existsSync(MCP_JSON)) {
+    throw new Error(
+      'Set N8N_API_URL and N8N_API_KEY in the environment. Reading them from ' +
+        MCP_JSON + ' only works inside the n8n builder folder this was developed in.'
+    );
+  }
   const mcp = JSON.parse(fs.readFileSync(MCP_JSON, 'utf8'));
   const e = mcp.mcpServers['n8n-local'].env;
   return { url: e.N8N_API_URL, key: e.N8N_API_KEY };
@@ -147,12 +156,17 @@ async function main() {
   const attached = attachCredentials(workflow);
   console.log('attached ' + attached + ' credential reference(s)');
 
-  // The public API rejects unknown top-level properties on create/update.
+  // The public API rejects unknown top-level properties on create/update, and
+  // binaryMode is one of them: `request/body/settings must NOT have additional
+  // properties`. The property is real and the instance stores it, but it is
+  // settable only through MCP or the UI. Strip it here rather than dropping it
+  // from workflow.json, so the export still describes what is deployed.
+  const { binaryMode, ...apiSettings } = workflow.settings || { executionOrder: 'v1' };
   const payload = {
     name: workflow.name,
     nodes: workflow.nodes,
     connections: workflow.connections,
-    settings: workflow.settings || { executionOrder: 'v1' },
+    settings: apiSettings,
   };
 
   let id = null;
