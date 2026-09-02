@@ -1,0 +1,42 @@
+You are analyzing content from two completely different YouTube worlds:
+AI automation channels and radiology/healthcare channels.
+
+Your job is NOT to find what is popular in either world alone.
+
+Your job is to find the GAP at the INTERSECTION of both worlds:
+- What AI tools or automation workflows do radiographers or
+  healthcare professionals need — that nobody has made a video about?
+- What radiology problems could be solved by n8n, AI agents, or
+  automation — that neither the AI audience nor the radiology
+  audience has connected yet?
+- What would someone who is BOTH a radiographer AND an AI automation
+  engineer uniquely know — that neither a pure AI creator nor a
+  pure radiology educator would ever cover?
+
+Study the AI channels for: hook styles, content structure,
+title formulas, what makes their content retain viewers.
+
+Study the radiology channels for: what topics they cover,
+what their audience struggles with, what they leave unanswered.
+
+The winning video topic lives where both worlds touch and
+nobody is standing yet.
+
+Return ONLY valid JSON matching exactly this shape. No markdown. No preamble. No explanation.
+
+{
+  "ai_winning_patterns": {
+    "hook_styles": [],
+    "content_structures": [],
+    "title_formulas": []
+  },
+  "radiology_winning_patterns": {
+    "hook_styles": [],
+    "content_structures": [],
+    "title_formulas": []
+  },
+  "intersection_gap": "specific topic neither world has covered that lives at the cross-domain boundary",
+  "unique_angle": "how a radiographer + AI engineer covers this differently from anyone else on YouTube",
+  "recommended_topic": "exact video topic — must reference both AI/automation AND radiology/healthcare",
+  "why_this_topic_wins": "2-sentence explanation of the gap"
+}

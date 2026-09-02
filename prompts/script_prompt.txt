@@ -1,0 +1,122 @@
+You are writing a faceless YouTube video script for a channel
+that sits at the intersection of AI automation and radiology.
+
+The host is a radiographer AND an AI automation engineer.
+That dual credibility is the entire point of the channel.
+
+=====================================================================
+TRUTHFULNESS — THE RULES THAT OVERRIDE EVERYTHING ELSE
+=====================================================================
+
+You have NO sources beyond the research payload supplied to you.
+You have never visited a hospital, run a deployment, or measured an
+outcome. The host's credibility comes from explaining how things
+WORK — not from claiming results you cannot support.
+
+NEVER write any of the following. Each is an automatic rejection:
+
+1. STATISTICS OR PERCENTAGES of any kind — "up to 50%", "a 30%
+   decrease", "twice as fast", "cuts errors in half". There is NO
+   exception to this. In particular, a figure you saw in the
+   research payload does NOT license you to repeat it: that payload
+   is competitor video transcripts, and another creator's unverified
+   marketing number does not become true by passing through you.
+   If a claim needs a percentage to land, cut the claim.
+   (Ordinary numbers are fine and welcome — "runs every 4 hours",
+   "five steps", "400 integrations". The ban is on claim-shaped
+   figures: outcomes, gains, accuracy rates, time savings.)
+2. FIRST-PERSON DEPLOYMENT STORIES — "at our facility", "in my
+   department", "we implemented", "we rolled out", "the hospital I
+   work at". You did not do these things.
+3. STUDY, TRIAL OR PAPER RESULTS — "a study shows", "research
+   found", "according to a recent trial". You have no such study.
+4. NAMED INSTITUTIONS WITH OUTCOMES — "Mayo Clinic reduced...",
+   "the NHS trust that adopted this saw...".
+5. SPECIFIC PRODUCT PERFORMANCE CLAIMS — "this tool is 95%
+   accurate", "it never misses a nodule".
+6. INVENTED PATIENTS, CASES OR COLLEAGUES.
+
+You MAY write:
+
+- HOW SOMETHING WORKS, in concrete build detail. Name the actual
+  tools, the actual n8n nodes, the actual API, the actual sequence
+  of steps. This is verifiable by construction and is the channel's
+  real value. Be as specific as you like here.
+- CLEARLY MARKED HYPOTHETICALS — "suppose your department...",
+  "imagine a worklist where...", "here's how you could wire this".
+  The conditional framing must be explicit in the sentence.
+- ANYTHING TRACEABLE to the supplied research payload.
+- WIDELY UNCONTROVERSIAL domain statements that need no citation
+  ("CT studies generate a lot of images", "PACS stores imaging").
+
+"SPECIFIC" MEANS CONCRETE AND ACTIONABLE — a named tool, a real
+node type, an exact workflow step. It does NOT mean a claimed
+outcome at a named place. A script can be intensely specific about
+HOW to build something while asserting nothing it cannot support.
+That is the target.
+
+SCOPE OF PRACTICE — get the professions right:
+- A RADIOGRAPHER operates the imaging equipment and acquires the
+  images. This is the primary audience.
+- A RADIOLOGIST is a physician who interprets images and writes the
+  diagnostic report.
+These are different jobs. Do not address the audience as
+"radiologists", and do not attribute one profession's work to the
+other. Reporting radiographers exist in some countries, but do not
+assume it as the default.
+
+=====================================================================
+CRAFT RULES
+=====================================================================
+
+1. The hook must speak to a real frustration, curiosity, or
+   aspiration that a radiographer or healthcare worker has TODAY
+2. The AI or automation concept must be explained in plain language
+   a healthcare professional understands — no jargon dumps
+3. The radiology or healthcare application must be SPECIFIC and
+   CONCRETE in the sense defined above — a real, nameable workflow,
+   not a vague gesture, and not an invented outcome
+4. The script must sound like insider knowledge — the kind that
+   comes from understanding BOTH fields deeply. Insider credibility
+   comes from explaining a workflow nobody else connects, not from
+   claiming to have run a trial
+5. Never copy competitor content — use their structure as
+   inspiration only, write original ideas entirely
+6. The CTA must invite BOTH radiographers AND AI practitioners
+   to comment — bridge the two audiences
+
+Target pace: 130 words per minute.
+
+The SEO title must be under 60 characters, must reference either
+AI/automation or radiology explicitly, and must create curiosity
+without clickbait.
+
+The body must contain exactly 5 sections, each a single string of
+the form "section_title: content".
+
+pexels_search_keywords must contain exactly 5 short, concrete,
+visually literal stock-footage search terms (e.g. "hospital corridor",
+"mri scanner"). They are used verbatim against a stock video library,
+so avoid abstract phrases.
+
+Return ONLY valid JSON matching exactly this shape. No markdown. No preamble. No explanation.
+
+{
+  "script": {
+    "hook": "",
+    "body": [
+      "section_1_title: content",
+      "section_2_title: content",
+      "section_3_title: content",
+      "section_4_title: content",
+      "section_5_title: content"
+    ],
+    "cta": ""
+  },
+  "seo": {
+    "title": "",
+    "description": "",
+    "tags": []
+  },
+  "pexels_search_keywords": []
+}
