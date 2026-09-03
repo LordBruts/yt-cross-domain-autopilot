@@ -10,10 +10,18 @@
  * the execution payload rather than hand-written: a fixture written to the
  * shape you expect agrees with buggy code and hides the bug.
  *
- * Two cases, and both matter:
- *   POSITIVE — the hallucinated script must be caught on every known violation.
- *   NEGATIVE — a clean script must pass with zero blocking violations. A gate
- *              that rejects everything is as useless as one that rejects nothing.
+ * Groups, in order:
+ *   POSITIVE      — the hallucinated script is caught on every known violation.
+ *   NEGATIVE      — a clean script passes with zero blocking. A gate that
+ *                   rejects everything is as useless as one that rejects nothing.
+ *   SOURCING      — the archive is citable, competitor transcripts never are.
+ *   FIRST-PERSON  — "I built" blocked in the body AND the SEO title.
+ *   NOT OVER-BROAD— ordinary numbers and ordinary "we" survive.
+ *   FORMAT        — length bounds both ways, section count, keyword variety.
+ *   GENERIC       — filler openings and marketing cliche.
+ *   WIRING        — asserts the connection graph, which every mocked case above
+ *                   structurally cannot see. The gate was once fed by the wrong
+ *                   node on every run while this suite stayed green.
  */
 
 const fs = require('fs');
@@ -44,7 +52,7 @@ const CONFIG = Object.fromEntries(
  * revision, while the execution still reported success. A permissive mock would
  * have agreed with that code and passed.
  */
-function runChecks(scriptObj, researchPayloadJson) {
+function runChecks(scriptObj, researchPayloadJson, archiveFacts) {
   const logs = [];
   const $input = {
     first: () => {
@@ -61,6 +69,12 @@ function runChecks(scriptObj, researchPayloadJson) {
     }
     if (name === 'Prepare Research Payload') {
       return { first: () => ({ json: { payload_json: researchPayloadJson || '' } }) };
+    }
+    // The archive: the ONLY citable source. Kept a separate mock from the
+    // research payload on purpose, because keeping them separate in the node is
+    // the entire safety property being tested.
+    if (name === 'Postgres · Content Memory') {
+      return { first: () => ({ json: { facts: archiveFacts || [], insights: [] } }) };
     }
     throw new Error('unexpected node reference in checks: ' + name);
   };
@@ -115,42 +129,67 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
-// NEGATIVE: a clean script must pass cleanly
+// A clean script in the CURRENT format: "Did you know?", BODY_SECTIONS
+// sections, FOOTAGE_KEYWORDS distinct keywords, near the word target.
 // ---------------------------------------------------------------------------
-console.log('\n=== NEGATIVE: a clean script must NOT be blocked ===');
-const filler = (n) =>
-  ('Here is how you would wire this step by step in n8n, naming the actual nodes and the actual ' +
-    'sequence so you can rebuild it yourself without guessing anything. ').repeat(n);
+const SECTIONS = Number(CONFIG.BODY_SECTIONS) || 4;
+const TARGET = Math.round((Number(CONFIG.VIDEO_LENGTH_MINUTES) || 4) * 130);
+const KW_COUNT = Number(CONFIG.FOOTAGE_KEYWORDS) || 12;
 
-const clean = {
+const KEYWORDS = [
+  'hospital corridor', 'mri scanner', 'ct scan machine', 'radiographer at work',
+  'medical monitor display', 'code on screen', 'server room', 'doctor reviewing scan',
+  'x-ray image', 'hospital reception', 'laptop typing closeup', 'data visualization',
+  'nurse station', 'medical robot arm', 'ultrasound probe', 'waiting room',
+].slice(0, KW_COUNT);
+
+// Sized so the whole script lands near TARGET: too-short and too-long are both
+// blocking now, so a filler that ignores the target would fail for the wrong reason.
+const body = (n) =>
+  ('Here is how you would wire this step by step in n8n, naming the actual nodes and the ' +
+   'actual sequence so you can rebuild it yourself. ').repeat(n);
+
+const cleanScript = () => ({
   script: {
     hook:
-      'You finish a shift and the worklist still is not clear. ' +
-      'Suppose you could see which studies have been waiting longest without opening PACS at all. ' +
-      filler(3),
-    body: [
-      'Section one: An n8n Schedule Trigger fires every hour and an HTTP Request node queries your worklist endpoint. ' + filler(12),
-      'Section two: A Code node groups the studies by modality and flags anything older than your threshold. ' + filler(12),
-      'Section three: A Switch node routes urgent items down one branch and routine items down another. ' + filler(12),
-      'Section four: A Telegram node posts the flagged list to the department channel each morning. ' + filler(12),
-      'Section five: Suppose your department wanted this weekly instead. You would change one field on the trigger. ' + filler(12),
-    ],
+      'Imaging Technology News reported a new browser-based reading tool cleared by the FDA. ' +
+      'Suppose you could see which studies have been waiting longest without opening PACS at all. ',
+    body: Array.from({ length: SECTIONS }, (_, i) =>
+      'Section ' + (i + 1) + ': An n8n Schedule Trigger fires hourly and an HTTP Request node ' +
+      'queries your worklist endpoint. ' + body(3)
+    ),
     cta:
       'Radiographers, how does your department handle the worklist backlog today? ' +
-      'And AI practitioners, what would you wire differently? Tell me in the comments. ' + filler(2),
+      'And AI practitioners, what would you wire differently? Tell me in the comments. ',
   },
   seo: {
     title: 'Automate Your Radiology Worklist With n8n',
     description: 'A build walkthrough for radiographers.',
     tags: ['n8n', 'radiography'],
   },
-  pexels_search_keywords: ['hospital corridor', 'mri scanner', 'computer screen', 'ct scan', 'nurse station'],
-};
+  sourced_claims: [],
+  pexels_search_keywords: KEYWORDS.slice(),
+});
 
-const good = runChecks(clean, JSON.stringify({ research: 'nothing numeric here' }));
+// A realistic archive row. The URL is what a sourced_claims entry must match.
+const ARCHIVE = [
+  {
+    title: 'GE HealthCare Expands Breast Imaging Portfolio',
+    source: 'Imaging Technology News',
+    url: 'http://www.itnonline.com/content/ge-healthcare-expands-breast-imaging-portfolio',
+    category: 'radiography',
+    key_findings:
+      'AI-supported reading powered by QVCAD demonstrated a 33% reduction in reading time ' +
+      'and up to 93% sensitivity for lesion detection.',
+    takeaway: 'New tooling aims to speed dense-breast screening.',
+  },
+];
+
+console.log('\n=== NEGATIVE: a clean script must NOT be blocked ===');
+const good = runChecks(cleanScript(), JSON.stringify({ research: 'nothing numeric here' }), ARCHIVE);
 const goodBlocking = good.result.deterministic_violations.filter((v) => v.severity === 'blocking');
 console.log(
-  '  ' + good.result.word_count + ' words, ' +
+  '  ' + good.result.word_count + ' words (target ' + good.result.word_target + '), ' +
   goodBlocking.length + ' blocking, ' +
   (good.result.deterministic_violations.length - goodBlocking.length) + ' advisory'
 );
@@ -158,33 +197,152 @@ for (const v of goodBlocking) console.log('    unexpected blocking: ' + v.rule +
 ok(goodBlocking.length === 0, 'clean script has zero blocking violations');
 
 // ---------------------------------------------------------------------------
-// NO EXEMPTION: a competitor transcript is not a citable source
+// SOURCING. The archive is citable; competitor transcripts never are.
 //
-// This case exists because two earlier designs failed here. Exempting figures
-// that appear in the research payload let "up to 50%" through, since 50% really
-// does appear -- in a competitor's transcript. Their unverified marketing claim
-// must not become this channel's assertion.
+// The middle case here is the one that matters most. Two earlier designs
+// exempted any figure found in the research payload, and both let "up to 50%"
+// through -- because 50% genuinely appears inside a competitor's transcript.
+// Laundering another creator's unverified marketing number into this channel's
+// voice is worse than inventing one, because it arrives looking sourced.
 // ---------------------------------------------------------------------------
-console.log('\n=== NO EXEMPTION: a percentage is blocked even if the corpus contains it ===');
-const pct = JSON.parse(JSON.stringify(clean));
-pct.script.body[0] = 'Section one: this cuts your reporting time by 42%. ' + filler(12);
+console.log('\n=== SOURCING: archive yes, competitor transcripts never ===');
 
-const evenIfSourced = runChecks(pct, JSON.stringify({ research: 'a competitor video says 42% somewhere' }));
+const attributed = cleanScript();
+attributed.script.body[0] =
+  'Section 1: Imaging Technology News reported a 33% reduction in reading time with that tool. ' + body(3);
+attributed.sourced_claims = [
+  { claim: 'a 33% reduction in reading time', source_name: 'Imaging Technology News', source_url: ARCHIVE[0].url },
+];
+const attRes = runChecks(attributed, '{}', ARCHIVE);
 ok(
-  evenIfSourced.result.deterministic_violations.some((v) => v.rule === 'fabricated-statistic'),
-  '42% is blocked even though "42%" appears in the corpus (transcripts are not evidence)'
+  !attRes.result.deterministic_violations.some((v) => v.rule === 'fabricated-statistic'),
+  '33% IS allowed: in the archive, declared, and the outlet named out loud'
+);
+ok(
+  (attRes.result.figures_sourced || []).some((f) => String(f.figure).includes('33')),
+  'and it is recorded in figures_sourced with its outlet'
 );
 
-// Ordinary, non-claim-shaped numbers must survive, or the rule is too broad to live with.
-console.log('\n=== NOT OVER-BROAD: ordinary numbers are untouched ===');
-const nums = JSON.parse(JSON.stringify(clean));
-nums.script.body[0] =
-  'Section one: the trigger runs every 4 hours across 5 steps and n8n ships 400 integrations. ' + filler(12);
+const unattributed = cleanScript();
+unattributed.script.body[0] = 'Section 1: this cuts reading time by 33%. ' + body(3);
+unattributed.sourced_claims = [
+  { claim: 'a 33% reduction in reading time', source_name: 'Imaging Technology News', source_url: ARCHIVE[0].url },
+];
+ok(
+  runChecks(unattributed, '{}', ARCHIVE).result.deterministic_violations.some(
+    (v) => v.rule === 'fabricated-statistic'
+  ),
+  'the SAME 33% is blocked when the outlet is not named in the line (declaring is not enough)'
+);
 
-const numsRes = runChecks(nums, '{}');
-const numsBlocking = numsRes.result.deterministic_violations.filter((v) => v.severity === 'blocking');
+const laundered = cleanScript();
+laundered.script.body[0] = 'Section 1: this cuts your reporting time by 50%. ' + body(3);
+laundered.sourced_claims = [
+  { claim: 'cuts reporting time by 50%', source_name: 'Some Creator', source_url: 'https://youtube.com/watch?v=abc' },
+];
+ok(
+  runChecks(
+    laundered,
+    JSON.stringify({ competitor_transcripts: 'a competitor video says 50% somewhere' }),
+    ARCHIVE
+  ).result.deterministic_violations.some((v) => v.rule === 'fabricated-statistic'),
+  '50% is BLOCKED though it appears in a competitor transcript (transcripts are not evidence)'
+);
+
+const notInArchive = cleanScript();
+notInArchive.script.body[0] =
+  'Section 1: Imaging Technology News reported a 71% reduction in reading time. ' + body(3);
+notInArchive.sourced_claims = [
+  { claim: 'a 71% reduction', source_name: 'Imaging Technology News', source_url: ARCHIVE[0].url },
+];
+ok(
+  runChecks(notInArchive, '{}', ARCHIVE).result.deterministic_violations.some(
+    (v) => v.rule === 'fabricated-statistic'
+  ),
+  '71% is blocked: real outlet, real URL, but that figure is not in the archive text'
+);
+
+// ---------------------------------------------------------------------------
+// FIRST-PERSON BUILD. The actual generated title from execution 655 was
+// "I Built an AI Radiology Report Writer in n8n (No Code)" -- and it sailed
+// through, because the title was only ever checked for length and topic.
+// ---------------------------------------------------------------------------
+console.log('\n=== FIRST-PERSON: "I built" blocked in body AND title ===');
+const built = cleanScript();
+built.script.body[0] = 'Section 1: I built an AI report writer that reads the worklist. ' + body(3);
+built.seo.title = 'I Built an AI Radiology Report Writer in n8n';
+const builtRes = runChecks(built, '{}', ARCHIVE);
+const fp = builtRes.result.deterministic_violations.filter((v) => v.rule === 'first-person-build');
+ok(fp.some((v) => v.quote.startsWith('body1:')), '"I built" in the body is blocked');
+ok(fp.some((v) => v.quote.startsWith('seo.title:')), '"I Built" in the SEO title is blocked');
+
+// ---------------------------------------------------------------------------
+// NOT OVER-BROAD: ordinary numbers and ordinary first-person survive.
+// ---------------------------------------------------------------------------
+console.log('\n=== NOT OVER-BROAD ===');
+const nums = cleanScript();
+nums.script.body[0] =
+  'Section 1: the trigger runs every 4 hours across 5 steps and n8n ships 400 integrations. ' + body(3);
+const numsBlocking = runChecks(nums, '{}', ARCHIVE)
+  .result.deterministic_violations.filter((v) => v.severity === 'blocking');
 for (const v of numsBlocking) console.log('    unexpected: ' + v.rule + ' -> ' + v.quote);
 ok(numsBlocking.length === 0, '"4 hours", "5 steps", "400 integrations" are NOT flagged');
+
+const legit = cleanScript();
+legit.script.body[0] = 'Section 1: we can wire this together in about ten minutes. ' + body(3);
+ok(
+  !runChecks(legit, '{}', ARCHIVE).result.deterministic_violations.some(
+    (v) => v.rule === 'first-person-build'
+  ),
+  '"we can wire this" is NOT flagged (the ban is on claimed authorship, not the word "we")'
+);
+
+// ---------------------------------------------------------------------------
+// FORMAT: length and clip variety are enforced in both directions.
+// ---------------------------------------------------------------------------
+console.log('\n=== FORMAT: length bounds and keyword variety ===');
+const longScript = cleanScript();
+longScript.script.body = longScript.script.body.map((b) => b + body(14));
+ok(
+  runChecks(longScript, '{}', ARCHIVE).result.deterministic_violations.some((v) => v.rule === 'too-long'),
+  'an overlong script is blocked (1606 words against a 1040 target shipped once)'
+);
+
+const fewKw = cleanScript();
+fewKw.pexels_search_keywords = KEYWORDS.slice(0, 5);
+ok(
+  runChecks(fewKw, '{}', ARCHIVE).result.deterministic_violations.some((v) => v.rule === 'keywords'),
+  'only 5 keywords is blocked (too few clips is what made the video repeat)'
+);
+
+const dupKw = cleanScript();
+dupKw.pexels_search_keywords = KEYWORDS.slice(0, KW_COUNT - 1).concat([KEYWORDS[0].toUpperCase()]);
+ok(
+  runChecks(dupKw, '{}', ARCHIVE).result.deterministic_violations.some(
+    (v) => v.rule === 'keywords-duplicate'
+  ),
+  'a case-differing duplicate keyword is blocked (it fetches the same clips)'
+);
+
+const wrongSections = cleanScript();
+wrongSections.script.body = wrongSections.script.body.concat(['Section extra: ' + body(3)]);
+ok(
+  runChecks(wrongSections, '{}', ARCHIVE).result.deterministic_violations.some(
+    (v) => v.rule === 'structure'
+  ),
+  SECTIONS + 1 + ' body sections is blocked (Config says exactly ' + SECTIONS + ')'
+);
+
+// ---------------------------------------------------------------------------
+// GENERIC: correction #8. A clean-sounding script that opens like every other
+// AI video has still failed.
+// ---------------------------------------------------------------------------
+console.log('\n=== GENERIC: filler openings are blocked ===');
+const generic = cleanScript();
+generic.script.hook = "In today's video, let's dive in and see how AI is a total game-changer. " + body(2);
+const genRes = runChecks(generic, '{}', ARCHIVE).result.deterministic_violations;
+ok(genRes.some((v) => v.rule === 'generic-filler'), '"in today\'s video" / "let\'s dive in" blocked');
+ok(genRes.some((v) => v.rule === 'hype-cliche'), '"game-changer" flagged');
 
 // ---------------------------------------------------------------------------
 // WIRING: the class of defect the cases above structurally cannot catch.

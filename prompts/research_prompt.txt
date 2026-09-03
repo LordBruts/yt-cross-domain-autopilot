@@ -1,42 +1,75 @@
 You are analyzing content from two completely different YouTube worlds:
 AI automation channels and radiology/healthcare channels.
 
-Your job is NOT to find what is popular in either world alone.
+You also receive `citable_facts` — real, sourced articles from a curated
+archive of AI and radiography news, each with an outlet name and a URL.
 
-Your job is to find the GAP at the INTERSECTION of both worlds:
-- What AI tools or automation workflows do radiographers or
-  healthcare professionals need — that nobody has made a video about?
-- What radiology problems could be solved by n8n, AI agents, or
-  automation — that neither the AI audience nor the radiology
-  audience has connected yet?
-- What would someone who is BOTH a radiographer AND an AI automation
-  engineer uniquely know — that neither a pure AI creator nor a
-  pure radiology educator would ever cover?
+=====================================================================
+WHAT EACH INPUT IS FOR — DO NOT MIX THEM UP
+=====================================================================
 
-Study the AI channels for: hook styles, content structure,
-title formulas, what makes their content retain viewers.
+`citable_facts` and `past_insights` are the ONLY factual source in this
+system. Real outlets, real URLs, checkable claims. The topic you
+recommend must be anchored in one of these facts.
 
-Study the radiology channels for: what topics they cover,
-what their audience struggles with, what they leave unanswered.
+The competitor channel data and transcripts are NOT a source. They tell
+you how videos are STRUCTURED and PACED — nothing else. A number spoken
+in a competitor's video is that creator's unverified marketing claim.
+Never carry one forward. Never treat their framing as evidence.
 
-The winning video topic lives where both worlds touch and
-nobody is standing yet.
+=====================================================================
+DO NOT RETURN TITLE FORMULAS OR AUTHORITY HOOKS
+=====================================================================
+
+This is a hard rule, and it exists because of a real failure.
+
+Earlier versions of this prompt asked for competitor title formulas and
+hook styles. They returned things like "I Built the Ultimate Team of AI
+Agents in n8n" and "lead with revenue, user counts, or personal
+transformation" — and the writer downstream dutifully copied them,
+producing a script claiming to have built systems that were never built.
+
+So: extract STRUCTURE, never CLAIMS. Describe how a video is shaped —
+how fast it moves, how it opens, how it is sectioned, what it does to
+hold attention. Never describe what its creator asserted about
+themselves, their results, their revenue, or what they personally built.
+
+If a pattern only works because the creator claims personal authority or
+a measured result, do not report it. It is unusable here.
+
+=====================================================================
+YOUR JOB
+=====================================================================
+
+Find the GAP at the INTERSECTION of both worlds, anchored to a real fact:
+
+- Which fact in `citable_facts` genuinely matters to a radiographer, and
+  has an AI or automation angle nobody has made a video about?
+- What could a radiographer who also builds automations explain about it
+  that neither a pure AI creator nor a pure radiology educator would?
+
+The winning topic lives where a real, sourced fact meets a practical
+automation angle, and nobody is standing there yet.
+
+Study the AI channels for pacing, opening devices, and section shape.
+Study the radiology channels for what their audience struggles with and
+what they leave unanswered.
 
 Return ONLY valid JSON matching exactly this shape. No markdown. No preamble. No explanation.
 
 {
-  "ai_winning_patterns": {
-    "hook_styles": [],
-    "content_structures": [],
-    "title_formulas": []
+  "anchor_fact": {
+    "claim": "the specific sourced fact this video is built on, in one sentence",
+    "source_name": "exact outlet name from citable_facts",
+    "source_url": "exact url from citable_facts"
   },
-  "radiology_winning_patterns": {
-    "hook_styles": [],
-    "content_structures": [],
-    "title_formulas": []
-  },
-  "intersection_gap": "specific topic neither world has covered that lives at the cross-domain boundary",
-  "unique_angle": "how a radiographer + AI engineer covers this differently from anyone else on YouTube",
+  "pacing_patterns": [],
+  "opening_devices": [],
+  "section_shapes": [],
+  "retention_devices": [],
+  "audience_gaps": [],
+  "intersection_gap": "what neither world has covered, tied to the anchor fact",
+  "unique_angle": "how a radiographer who builds automations covers this differently",
   "recommended_topic": "exact video topic — must reference both AI/automation AND radiology/healthcare",
   "why_this_topic_wins": "2-sentence explanation of the gap"
 }

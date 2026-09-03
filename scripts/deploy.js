@@ -28,6 +28,8 @@ const CREDENTIAL_MAP = {
   'YT · Search Channel': { httpQueryAuth: 'youtubeApiKey' },
   'YT · Batch Statistics': { httpQueryAuth: 'youtubeApiKey' },
   'Pexels · Search Footage': { httpHeaderAuth: 'pexels' },
+  // The sibling content-engine archive: this pipeline's only citable source.
+  'Postgres · Content Memory': { postgres: 'contentEnginePostgres' },
   'OpenRouter · Research': { openRouterApi: 'openRouter' },
   'OpenRouter · Research Retry': { openRouterApi: 'openRouter' },
   'OpenRouter · Script': { openRouterApi: 'openRouter' },
@@ -82,8 +84,11 @@ function auditCredentials(workflow) {
     .filter((n) => {
       const auth = n.parameters && n.parameters.authentication;
       const needs = auth === 'predefinedCredentialType' || auth === 'genericCredentialType';
-      const isYouTubeNode = n.type === 'n8n-nodes-base.youTube';
-      return needs || isYouTubeNode;
+      // Node types that always require a credential without declaring an
+      // `authentication` parameter at all. Anything added here must also be
+      // added to CREDENTIAL_MAP, which is the point of the check.
+      const ALWAYS = ['n8n-nodes-base.youTube', 'n8n-nodes-base.postgres'];
+      return needs || ALWAYS.includes(n.type);
     })
     .filter((n) => !n.credentials || Object.keys(n.credentials).length === 0)
     .map((n) => n.name);

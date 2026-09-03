@@ -1,7 +1,23 @@
 {
   "_comment": "Copy to deploy.config.json. Credential IDs are handles into one particular n8n instance, so the real file is gitignored. scripts/create-credentials.js writes it for you; these are the four credentials scripts/deploy.js attaches by node name.",
-  "openRouter": { "id": "PASTE_CREDENTIAL_ID", "name": "OpenRouter" },
-  "youtubeApiKey": { "id": "PASTE_CREDENTIAL_ID", "name": "YouTube Data API Key (Autopilot)" },
-  "pexels": { "id": "PASTE_CREDENTIAL_ID", "name": "Pexels API Key (Autopilot)" },
-  "youtubeOAuth": { "id": "PASTE_CREDENTIAL_ID", "name": "YouTube Upload (Autopilot)" }
+  "openRouter": {
+    "id": "PASTE_CREDENTIAL_ID",
+    "name": "OpenRouter"
+  },
+  "youtubeApiKey": {
+    "id": "PASTE_CREDENTIAL_ID",
+    "name": "YouTube Data API Key (Autopilot)"
+  },
+  "pexels": {
+    "id": "PASTE_CREDENTIAL_ID",
+    "name": "Pexels API Key (Autopilot)"
+  },
+  "youtubeOAuth": {
+    "id": "PASTE_CREDENTIAL_ID",
+    "name": "YouTube Upload (Autopilot)"
+  },
+  "contentEnginePostgres": {
+    "id": "PASTE_CREDENTIAL_ID",
+    "name": "Content Engine Postgres"
+  }
 }

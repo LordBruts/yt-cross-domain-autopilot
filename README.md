@@ -1,14 +1,18 @@
 # YT Cross-Domain Autopilot — AI × Radiology
 
-A scheduled n8n pipeline that researches five YouTube channels across two domains, finds a topic at
-the **intersection** of both, writes a faceless script, renders an 8-minute video, and uploads it to
-YouTube. No manual trigger, no human input per run.
+A scheduled n8n pipeline that finds a real, sourced fact at the **intersection** of AI automation
+and radiology, writes a 4-minute "Did you know?" script around it, renders the video with burned-in
+captions, and uploads it to YouTube. No manual trigger, no human input per run.
 
-The **intersection is the deliverable**. If the output is a generic AI tutorial, or a generic
-radiology lesson, the run has failed even when every node is green.
+Two things make or break a run, and neither is visible in a green execution:
 
-**Status: built, deployed, run end to end, and now scheduled and active.** An editorial gate has
-since been added; its LLM layer has not yet run live.
+- **The intersection is the deliverable.** A generic AI tutorial fails. A generic radiology lesson
+  fails. So does anything that could have been written about any hospital in any week.
+- **Nothing is asserted that cannot be traced.** Every figure comes from a named article in the
+  [grounding archive](#grounding-where-the-facts-come-from) and is attributed out loud, or it does
+  not ship.
+
+**Status: built, deployed, scheduled and active.** Three full runs have completed end to end.
 
 Execution 654 completed in 9.2 minutes and uploaded a real private video. It researched 50 videos
 across the 5 channels, fetched 6 transcripts, produced a cross-domain topic, wrote the script and
@@ -28,10 +32,22 @@ That is what the [Editorial Gate](#the-editorial-gate) now exists to prevent. Al
   the channel is not verified for custom thumbnails (needs
   [youtube.com/verify](https://www.youtube.com/verify); no workflow change will fix it).
 
-The gate is **deployed but not yet exercised on a live run** — its deterministic layer is covered by
-tests, its LLM layer is not. The schedule is now **active** (every 3 days at 09:00) and uploads are
-`private`, so the first unattended run is also the gate's first real test. Read the description of
-whatever it uploads: a script with surviving blocking violations is uploaded anyway, flagged, and
+The gate has since run live twice and caught real unsupported claims. But runs 655 and 656 exposed
+four more problems that the gate could not have caught, because they were not violations of its
+rules — they were the rules being wrong:
+
+| Symptom | Cause |
+|---|---|
+| *"I Built an AI Radiology Report Writer in n8n"* — the actual SEO title of run 655 | The research step harvested competitor **title formulas** and handed them to the writer to imitate. It returned, verbatim, `"I Built the Ultimate Team of AI Agents in n8n"` and the hook style `"lead with revenue, user counts, or personal transformation"`. The pipeline was instructing itself to fabricate. |
+| 10.9-minute video for an 8-minute target | Only a lower length bound was enforced. Overshoot was free. |
+| Visibly repeating b-roll | `segment = duration / len(clips)` gave **65-second slots** across 10 clips, so each looped 3–6 times in place. |
+| Reads generically | Nothing required the script to be anchored to anything specific, because there was nothing specific to anchor it to. |
+
+All four are addressed below. The last one is the reason the [grounding
+archive](#grounding-where-the-facts-come-from) exists.
+
+The schedule is **active** (every 3 days at 09:00) and uploads are `private`. Read the description
+of whatever it uploads: a script with surviving blocking violations is uploaded anyway, flagged, and
 forced to `private` regardless of `PRIVACY_STATUS`.
 
 ---
@@ -56,13 +72,16 @@ n8n container (untouched)                     yt-media-worker
 ──────────────────────────                    ───────────────────────────
 Schedule (every 3 days, 09:00)                python3 · ffmpeg · edge-tts
   → Config (Set node)                         youtube-transcript-api
-  → 5× YouTube search.list                    FastAPI on host port 8099
-  → 1× videos.list (batched, 50 ids)
-  → Rank + domain balance          ──HTTP──▶  POST /transcripts
-  → OpenRouter research            ──HTTP──▶  GET  /prompts/research
-  → OpenRouter script              ──HTTP──▶  GET  /prompts/script
-  → Pexels footage search
+  → Postgres · Content Memory ──┐             FastAPI on host port 8099
+  → 5× YouTube search.list      │
+  → 1× videos.list (50 ids)     │ citable facts
+  → Rank + domain balance       │  ──HTTP──▶  POST /transcripts
+  → OpenRouter research  ◀──────┤  ──HTTP──▶  GET  /prompts/research
+  → OpenRouter script    ◀──────┘  ──HTTP──▶  GET  /prompts/script
+  → Editorial gate (x2)            ──HTTP──▶  GET  /prompts/verifier
+  → Pexels footage (12 kw x 4)
   → Render + poll                  ──HTTP──▶  POST /render, GET /jobs/{id}
+     (shots, TTS, captions burned in)
   → Download video                 ──HTTP──▶  GET  /jobs/{id}/video
   → YouTube upload (native node)
   → Thumbnail                      ──HTTP──▶  GET  /jobs/{id}/thumbnail
@@ -92,6 +111,38 @@ fails with `bad address`.
 | `deploy.config.json` | Credential **IDs** only, no secrets. Gitignored (instance-specific). |
 | `.wfid` | The deployed workflow ID. Gitignored. |
 | `deploy.config.example.json` | Template for the above. |
+
+---
+
+## Grounding: where the facts come from
+
+`Postgres · Content Memory` reads the archive built by the sibling
+[ai-radiography-content-engine](../ai-radiography-content-engine) project — a daily pipeline that
+collects AI and radiography news, summarises it, and synthesises one cross-domain insight per run.
+Measured on the live database: **886 articles, 848 summaries, 16 insights**, each carrying an outlet
+name, a URL and a structured `key_findings`.
+
+**This is the pipeline's only citable source, and that is the whole point.** Before it existed there
+was nothing to fact-check against, so the gate could only ban every figure outright — which is a
+safe rule and a useless one for an educational channel. Now a figure is allowed when it traces to a
+stored row *and* the script names the outlet out loud.
+
+Three things about the query are deliberate, and each fixes something that was wrong on the first
+attempt:
+
+- **It always returns exactly one row.** A Postgres node that returns zero rows stops the branch
+  dead, so an empty archive would read as silence rather than "nothing found".
+- **It is balanced by category**, 8 AI and 8 radiography. Ranking the whole pool by `value_score`
+  returned 30 AI to 10 radiography, because the AI feeds are denser — and a cross-domain script
+  cannot be written from a one-sided pile.
+- **It caps each outlet at 3 rows.** Without that, OpenAI (115 rows) and Radiology Business (308)
+  crowd out everything else and the video ends up sourced from two places.
+
+The filter `key_findings NOT ILIKE '%no concrete findings%'` uses the archive's own honesty — its
+summariser says so explicitly when an article carries nothing — to select only rows worth citing.
+
+The node runs with `onError: continueRegularOutput`. If Postgres is down the run still produces a
+video; it simply cannot cite anything, and the gate blocks every unattributed figure as before.
 
 ---
 
@@ -127,25 +178,46 @@ Free, deterministic, cannot itself hallucinate. Catches fabrication by **form**.
 
 | Rule | Severity |
 |---|---|
-| `fabricated-statistic` — any percentage | blocking |
-| `measured-outcome-claim` — "a 30% decrease" | blocking |
+| `fabricated-statistic` — any percentage | blocking *(unless sourced, below)* |
+| `measured-outcome-claim` — "a 30% decrease" | blocking *(unless sourced)* |
+| `first-person-build` — "I built", "we created", "I automated" | blocking |
 | `first-person-deployment` — "at our facility", "we implemented" | blocking |
 | `unsourced-study-claim` — "a study shows", "research found" | blocking |
+| `generic-filler` — "in today's video", "let's dive in" | blocking |
 | `profession-confusion` — mentions of radiologists | advisory → judge adjudicates |
 | `absolute-claim` — "guaranteed", "never fails" | advisory |
+| `hype-cliche` — "game-changer", "revolutionize" | advisory |
 
-**There is no traceability exemption for percentages, deliberately.** Two earlier designs failed
-here, and the regression test caught both. Exempting figures whose digits appear in the research
-payload was useless — the payload is full of view counts and video ids, so "50" appeared somewhere
-and licensed "up to 50%". Tightening it to percentages-only *still* let it through, because "50%"
-genuinely appears in a competitor's transcript. That second failure is the instructive one: a
-creator's unverified marketing number must not become this channel's assertion by passing through
-it. So every percentage is blocked. The rule is narrow — "4 hours", "5 steps" and "400 integrations"
-are untouched.
+`first-person-build` also runs against the **SEO title**, which was previously checked only for
+length and topic — which is how *"I Built an AI Radiology Report Writer in n8n (No Code)"* shipped
+as a title while the same words in the body would have been blocked.
 
-The same node owns every mechanical ruling, so one component owns quality: exactly 5 body sections ·
-title ≤ 60 chars referencing AI or radiology · ≥ 70% of target length · CTA naming both audiences ·
-5 Pexels keywords.
+#### The sourcing exemption, and the line it must not cross
+
+A percentage passes only when **all** of these hold:
+
+1. it is declared in `sourced_claims`;
+2. that entry's `source_url` is a URL actually present in the Postgres archive;
+3. the figure actually appears in that archive row's text;
+4. the outlet name appears in the spoken line — attribution must be *audible*, not just declared.
+
+**The exemption keys off the archive only. Competitor transcripts are never evidence.** Two earlier
+designs got this wrong and the regression test caught both. Exempting figures whose digits appear in
+the research payload was useless — the payload is full of view counts and video ids, so "50"
+appeared somewhere and licensed "up to 50%". Tightening it to percentages-only *still* let it
+through, because "50%" genuinely appears in a competitor's transcript. That second failure is the
+instructive one: laundering another creator's unverified marketing number into this channel's voice
+is worse than inventing one, because it arrives looking sourced. The two corpora are therefore
+separate variables in the node, and `test-editorial-checks.js` has a dedicated case for it.
+
+The rule stays narrow — "4 hours", "5 steps" and "400 integrations" are untouched, and "we can wire
+this together" is not a build claim.
+
+The same node owns every mechanical ruling, so one component owns quality: exactly `BODY_SECTIONS`
+body sections · title ≤ 60 chars referencing AI or radiology · **70–135%** of target length (an
+upper bound now, after a 1606-word draft shipped against a 1040 target) · CTA naming both audiences
+· `FOOTAGE_KEYWORDS` **distinct** Pexels keywords, since too few or near-duplicate keywords is what
+makes the finished video repeat itself.
 
 ### Layer 3 — the judge (`Editorial Verifier`)
 
@@ -217,6 +289,51 @@ instead of quietly agreeing with itself.
 
 ---
 
+## How the video is cut and captioned
+
+### Shots, not slots
+
+The worker used to compute `segment = duration / len(clips)`. With 10 clips over a 653-second
+voiceover that is a **65-second slot each**, and since stock clips run 10–20 seconds, every one of
+them looped 3–6 times in place. The finished video looked repetitive not because the clip pool was
+small but because each clip was stretched over a minute.
+
+It now builds a **shot list**: `ceil(duration / SHOT_SECONDS)` shots, cycling the clip pool. When
+the pool is smaller than the shot count a clip does come back — but at a different offset each time
+(`(n × SHOT_SECONDS) mod headroom`), so the second appearance is different footage from the same
+source rather than the same four seconds again.
+
+The Pexels query enforces `min_duration=8`, so at a 4-second shot the normal path never loops at
+all. The `-stream_loop` branch survives only for a clip shorter than one shot, and its loop count
+stays **finite**: with `-stream_loop -1` the input never ends and `-t` is not a reliable stop,
+because each iteration restarts the input PTS and the duration check can fail to trip. That was
+observed directly — an encode still running minutes past a 7.8-second target.
+
+### Captions
+
+`edge-tts` gives word-level timings for free, but only if you ask correctly:
+
+- The **CLI's** `--write-subtitles` emits **sentence** cues. Verified: a two-sentence sample produced
+  exactly two, with overlapping timestamps. Useless for karaoke.
+- The **Python API** yields word events — but only when constructed with
+  `Communicate(..., boundary="WordBoundary")`. The default is `SentenceBoundary` and produces no
+  word events at all, which reads as the feature being missing rather than switched off.
+
+So the worker calls the Python API directly and gets audio plus word timings in one pass. Words are
+grouped into 3-word phrases and written as ASS, with the spoken word accented via an inline colour
+override rather than ASS `\k` — `\k` timing is relative to the line start and drifts once a phrase
+spans a pause. ffmpeg burns them in with the `ass` filter at the mux step.
+
+Fonts are **Montserrat** (captions) and **Bebas Neue** (thumbnail). Anton is the obvious choice for
+this look and is *not packaged for Debian trixie* — check `apt-cache search '^fonts-'` in the base
+image before adding a font, because `packages.debian.org` returns HTTP 200 for packages that do not
+exist and proves nothing. Both faces fall back to DejaVu Sans Bold, so an un-rebuilt image degrades
+to plain captions instead of failing the render.
+
+Burning in forces a re-encode at the mux step — there is no stream-copy path through a filter.
+
+---
+
 ## Spec node → implementation
 
 Every node in the original spec is accounted for. Five moved into the worker.
@@ -253,7 +370,10 @@ pipeline with the bugs fixed.
    on a 12s clip yields 12s, the concatenated video lands at ~2 minutes, and the final `-shortest`
    mux then truncates *the whole video* to match — so most of the narration is thrown away.
 
-   Fixed by looping each clip to fill its slot, with two details that matter:
+   Fixed at the time by looping each clip to fill its slot. That fix was correct about the duration
+   and wrong about the result — filling a 65-second slot with a 12-second clip is exactly what made
+   the b-roll repeat. The slot model is gone; see [Shots, not
+   slots](#shots-not-slots). Two details from it still apply:
 
    - The loop count is **finite** — `ceil(segment / clip) - 1` — not `-1`. With an infinite
      `-stream_loop` the input never ends, and `-t` is not a reliable stop because each iteration
@@ -397,7 +517,11 @@ Open the **Config** node. Everything non-secret lives there, editable in the UI 
 | `CHANNEL_RADIOLOGY_1..2` | Radiology Channel, Radiology Tutorials |
 | `CHANNEL_*_DOMAIN` | `AI automation` / `radiology/healthcare` |
 | `NICHE_CONTEXT`, `TARGET_AUDIENCE` | as specified |
-| `VIDEO_LENGTH_MINUTES` | `8` |
+| `VIDEO_LENGTH_MINUTES` | `4` — ~520 words |
+| `BODY_SECTIONS` | `4` — enforced exactly |
+| `SHOT_SECONDS` | `4` — one new shot every 4 s |
+| `FOOTAGE_KEYWORDS` | `12` — distinct search terms |
+| `FOOTAGE_PER_KEYWORD` | `4` — up to 48 clips per run |
 | `RESEARCH_MODEL` | `openai/gpt-5.6-luna` |
 | `WRITER_MODEL` | `anthropic/claude-sonnet-4.5` |
 | `JUDGE_MODEL` | `openai/gpt-5.6-luna` |
@@ -406,6 +530,12 @@ Open the **Config** node. Everything non-secret lives there, editable in the UI 
 
 The three model fields replaced a single `LLM_MODEL`. Keep `WRITER_MODEL` and `JUDGE_MODEL` on
 different vendors — see [the judge](#layer-3--the-judge-editorial-verifier).
+
+`FOOTAGE_KEYWORDS × FOOTAGE_PER_KEYWORD` is the clip pool, and `VIDEO_LENGTH_MINUTES × 60 /
+SHOT_SECONDS` is the number of shots. At the defaults that is 48 clips for ~60 shots, so a clip
+reappears about a dozen times — and when it does, the worker seeks to a **different offset** in it,
+so the repeat is different footage from the same source. Lowering `FOOTAGE_KEYWORDS` or raising
+`VIDEO_LENGTH_MINUTES` without raising the pool brings the repetition back.
 
 ### 5. Run it once by hand
 
@@ -504,17 +634,19 @@ editing a prompt does not mean redeploying the workflow.
 
 | Item | Cost |
 |---|---|
-| Research call (`gpt-5.6-luna`, ~12k in / ~600 out) | ~$0.003 |
-| Script call (`claude-sonnet-4.5`, ~2k in / ~2.5k out) | ~$0.04 |
-| Judge call (`gpt-5.6-luna`, ~10k in / ~800 out) | ~$0.003 |
+| Research call (`gpt-5.6-luna`, ~17k in / ~600 out) | ~$0.004 |
+| Script call (`claude-sonnet-4.5`, ~7k in / ~1.2k out) | ~$0.04 |
+| Judge call (`gpt-5.6-luna`, ~12k in / ~800 out) | ~$0.004 |
 | edge-tts voiceover | free, no account |
 | Pexels footage | free |
 | YouTube Data API | free within quota |
 | **Total, clean first pass** | **~$0.05** |
 | **Total, one revision round** | **~$0.09** |
 
-The script call dominates, and it is the one call worth paying for — see the length problem under
-[Troubleshooting](#troubleshooting). The judge is cheap because
+The archive payload adds ~5k tokens to the research and script calls and ~5k to the judge; at
+`gpt-5.6-luna` input pricing that is a fraction of a cent, and the 4-minute script saves more on
+output than the extra context costs. The script call still dominates and is the one worth paying
+for — see the length problem under [Troubleshooting](#troubleshooting). The judge is cheap because
 `gpt-5.6-luna` is an order of magnitude cheaper per token than the writer; a weak judge would be
 false economy, but a cheap one from a different vendor is not.
 
@@ -604,7 +736,8 @@ a Google outage rather than a bad parameter.
 
 **Render never finishes** — `docker logs yt-media-worker`, and check `GET /jobs/<id>` for the
 current `stage`. Measured on this host: **1.9x realtime**, i.e. 30s of wall clock for 15.7s of
-finished video, which projects to **~15 minutes for a full 8-minute video**. The workflow's
+finished video, which projects to **~8 minutes for a 4-minute video**, plus a caption burn-in pass
+that forces a re-encode at the mux step. The workflow's
 `executionTimeout` is 5400s (90 min), so there is generous headroom. The poll loop has no
 iteration cap, so a genuinely wedged job loops until that timeout.
 
@@ -646,21 +779,24 @@ curl -s -X POST http://localhost:8099/transcripts \
 Microsoft's endpoint, which now requires a `Sec-MS-GEC` token those versions do not send. Pinned to
 `edge-tts==7.2.8`, which works. If it returns, upgrade the pin rather than debugging the audio.
 
-**The video is much shorter than 8 minutes** — small models reliably under-write. On the first live
-run `gpt-4o-mini` returned **336 words against a ~1040-word target**, producing 2 min 23 s of video
-instead of 8 minutes. The content was on-topic and correctly cross-domain; it was simply a third of
-the requested length.
+**The video is the wrong length** — it has gone wrong in both directions, so both are now bounded.
 
-Three mitigations are in place:
+`gpt-4o-mini` returned **336 words against a ~1040-word target** on the first live run, producing
+2 min 23 s of video. Then, after the writer was upgraded and the gate's first round was found to be
+feeding it nonsense, run 656 came back at **1606 words** — 10.9 minutes for an 8-minute slot. Only a
+lower bound was enforced, so overshoot cost nothing.
 
-- The script instruction sets a **per-section word budget** ("each of the 5 body sections: 178 words
-  minimum") rather than one total, and states that a short script will be regenerated. Per-section
+Four mitigations are in place:
+
+- The script instruction sets a **per-section word budget** rather than one total. Per-section
   targets control LLM length far better than a single overall number.
-- **`Editorial Checks` enforces it**, alongside every other ruling, so one component owns quality
-  and there is a single threshold rather than two that drift apart. A script under 70% of target is
-  flagged. If it is still short after the revision round the run proceeds anyway — shipping a
-  slightly short video beats discarding a whole run's research — and `Final Log` reports
-  `script_word_count` and `script_word_target`.
+- **`Editorial Checks` enforces both bounds** — under 70% *and* over 135% of target are blocking —
+  alongside every other ruling, so one component owns quality and there is a single threshold rather
+  than two that drift apart. If it is still wrong after the revision round the run proceeds anyway
+  (shipping a slightly off-length video beats discarding a whole run's research) and `Final Log`
+  reports `script_word_count` and `script_word_target`.
+- `VIDEO_LENGTH_MINUTES` is **4**, so the target is ~520 words. Shorter is also cheaper and faster:
+  render and upload were 29 of the 36 minutes an 8-minute run took.
 - `WRITER_MODEL` is `anthropic/claude-sonnet-4.5`. This is the main reason the per-run cost is
   ~$0.05 rather than fractions of a cent, and it is the right place to spend it.
 

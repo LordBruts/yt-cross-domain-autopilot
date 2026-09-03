@@ -24,7 +24,7 @@
       }
     },
     {
-      "id": "a020",
+      "id": "a024",
       "name": "Config",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.5,
@@ -110,35 +110,59 @@
             {
               "id": "a014",
               "name": "VIDEO_LENGTH_MINUTES",
-              "value": 8,
+              "value": 4,
               "type": "number"
             },
             {
               "id": "a015",
+              "name": "BODY_SECTIONS",
+              "value": 4,
+              "type": "number"
+            },
+            {
+              "id": "a016",
+              "name": "SHOT_SECONDS",
+              "value": 4,
+              "type": "number"
+            },
+            {
+              "id": "a017",
+              "name": "FOOTAGE_KEYWORDS",
+              "value": 12,
+              "type": "number"
+            },
+            {
+              "id": "a018",
+              "name": "FOOTAGE_PER_KEYWORD",
+              "value": 4,
+              "type": "number"
+            },
+            {
+              "id": "a019",
               "name": "MEDIA_WORKER_URL",
               "value": "http://host.docker.internal:8099",
               "type": "string"
             },
             {
-              "id": "a016",
+              "id": "a020",
               "name": "RESEARCH_MODEL",
               "value": "openai/gpt-5.6-luna",
               "type": "string"
             },
             {
-              "id": "a017",
+              "id": "a021",
               "name": "WRITER_MODEL",
               "value": "anthropic/claude-sonnet-4.5",
               "type": "string"
             },
             {
-              "id": "a018",
+              "id": "a022",
               "name": "JUDGE_MODEL",
               "value": "openai/gpt-5.6-luna",
               "type": "string"
             },
             {
-              "id": "a019",
+              "id": "a023",
               "name": "PRIVACY_STATUS",
               "value": "private",
               "type": "string"
@@ -149,7 +173,25 @@
       }
     },
     {
-      "id": "a021",
+      "id": "a025",
+      "name": "Postgres · Content Memory",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH pool AS (\n  SELECT a.title, a.source, a.url, a.category, a.value_score,\n         a.published_at::date          AS published,\n         left(s.key_findings, 700)     AS key_findings,\n         left(s.takeaway, 300)         AS takeaway,\n         row_number() OVER (PARTITION BY a.category, a.source\n                            ORDER BY a.value_score DESC NULLS LAST,\n                                     a.published_at DESC) AS rn_src\n  FROM summaries s JOIN articles a ON a.id = s.article_id\n  WHERE s.status = 'ok' AND a.reject_reason = ''\n    AND s.key_findings NOT ILIKE '%no concrete findings%'\n    AND length(s.key_findings) > 120\n    AND a.published_at > now() - interval '60 days'\n), capped AS (\n  SELECT *, row_number() OVER (PARTITION BY category\n                               ORDER BY value_score DESC NULLS LAST,\n                                        published DESC) AS rn\n  FROM pool WHERE rn_src <= 3\n)\nSELECT\n  (SELECT COALESCE(json_agg(x ORDER BY x.category, x.rn), '[]'::json)\n   FROM (SELECT title, source, url, category, published, key_findings, takeaway, rn\n         FROM capped WHERE rn <= 8) x) AS facts,\n  (SELECT COALESCE(json_agg(y), '[]'::json)\n   FROM (SELECT r.finished_at::date AS day, left(r.insight, 900) AS insight\n         FROM runs r WHERE r.insufficient = false\n         ORDER BY r.finished_at DESC LIMIT 6) y) AS insights;",
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "a026",
       "name": "Build Channel List",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -162,7 +204,7 @@
       }
     },
     {
-      "id": "a022",
+      "id": "a027",
       "name": "YT · Search Channel",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -208,7 +250,7 @@
       "maxTries": 2
     },
     {
-      "id": "a023",
+      "id": "a028",
       "name": "Flatten & Tag Domain",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -221,7 +263,7 @@
       }
     },
     {
-      "id": "a024",
+      "id": "a029",
       "name": "YT · Batch Statistics",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -258,7 +300,7 @@
       "maxTries": 2
     },
     {
-      "id": "a025",
+      "id": "a030",
       "name": "Rank & Balance Domains",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -271,7 +313,7 @@
       }
     },
     {
-      "id": "a026",
+      "id": "a031",
       "name": "Worker · Fetch Transcripts",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -292,7 +334,7 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "a027",
+      "id": "a032",
       "name": "Worker · Research Prompt",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -315,7 +357,7 @@
       "maxTries": 2
     },
     {
-      "id": "a028",
+      "id": "a033",
       "name": "Prepare Research Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -324,11 +366,11 @@
         300
       ],
       "parameters": {
-        "jsCode": "// Splits transcripts back out by domain so the model sees the two worlds\n// side by side rather than as one undifferentiated pile.\nconst AI = 'AI automation';\n\nconst cfg = $('Config').first().json;\nconst ranked = $('Rank & Balance Domains').first().json;\nconst tRes = $('Worker · Fetch Transcripts').first().json || {};\nconst transcripts = tRes.transcripts || {};\n\nconst ai_transcripts = {};\nconst radiology_transcripts = {};\nfor (const [videoId, rec] of Object.entries(transcripts)) {\n  const bucket = rec.domain === AI ? ai_transcripts : radiology_transcripts;\n  bucket[videoId] = { transcript: rec.transcript, domain: rec.domain };\n}\n\nconst payload = {\n  ai_channel_data: ranked.ai_channel_data,\n  radiology_channel_data: ranked.radiology_channel_data,\n  ai_transcripts,\n  radiology_transcripts,\n  niche_context: cfg.NICHE_CONTEXT,\n  target_audience: cfg.TARGET_AUDIENCE,\n};\n\nreturn [{\n  json: {\n    payload_json: JSON.stringify(payload),\n    system_prompt: $('Worker · Research Prompt').first().json.data,\n    transcripts_used: Object.keys(transcripts).length,\n    transcripts_available: tRes.available_count || 0,\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "// Splits transcripts back out by domain so the model sees the two worlds\n// side by side rather than as one undifferentiated pile.\nconst AI = 'AI automation';\n\nconst cfg = $('Config').first().json;\nconst ranked = $('Rank & Balance Domains').first().json;\nconst tRes = $('Worker · Fetch Transcripts').first().json || {};\nconst transcripts = tRes.transcripts || {};\n\nconst ai_transcripts = {};\nconst radiology_transcripts = {};\nfor (const [videoId, rec] of Object.entries(transcripts)) {\n  const bucket = rec.domain === AI ? ai_transcripts : radiology_transcripts;\n  bucket[videoId] = { transcript: rec.transcript, domain: rec.domain };\n}\n\n// The archive is the ONLY citable source. It is handed over under a key that\n// says so, and the competitor material under keys that say the opposite, so the\n// distinction survives into the model's context rather than living only in the\n// prompt. Missing entirely if Postgres was down (the node continues on error).\nconst mem = $('Postgres · Content Memory').first().json || {};\nconst citable_facts = Array.isArray(mem.facts) ? mem.facts : [];\nconst past_insights = Array.isArray(mem.insights) ? mem.insights : [];\n\nconst payload = {\n  citable_facts,\n  past_insights,\n  competitor_channel_data_NOT_CITABLE: {\n    ai: ranked.ai_channel_data,\n    radiology: ranked.radiology_channel_data,\n  },\n  competitor_transcripts_NOT_CITABLE: {\n    ai: ai_transcripts,\n    radiology: radiology_transcripts,\n  },\n  niche_context: cfg.NICHE_CONTEXT,\n  target_audience: cfg.TARGET_AUDIENCE,\n};\n\nreturn [{\n  json: {\n    payload_json: JSON.stringify(payload),\n    system_prompt: $('Worker · Research Prompt').first().json.data,\n    transcripts_used: Object.keys(transcripts).length,\n    transcripts_available: tRes.available_count || 0,\n    citable_facts_count: citable_facts.length,\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a029",
+      "id": "a034",
       "name": "OpenRouter · Research",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -352,7 +394,7 @@
       "maxTries": 2
     },
     {
-      "id": "a030",
+      "id": "a035",
       "name": "Parse Research",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -365,7 +407,7 @@
       }
     },
     {
-      "id": "a032",
+      "id": "a037",
       "name": "Research JSON OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
@@ -383,7 +425,7 @@
           },
           "conditions": [
             {
-              "id": "a031",
+              "id": "a036",
               "leftValue": "={{ $json.ok }}",
               "rightValue": "",
               "operator": {
@@ -399,7 +441,7 @@
       }
     },
     {
-      "id": "a033",
+      "id": "a038",
       "name": "OpenRouter · Research Retry",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -423,7 +465,7 @@
       "maxTries": 2
     },
     {
-      "id": "a034",
+      "id": "a039",
       "name": "Parse Research (Retry)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -436,7 +478,7 @@
       }
     },
     {
-      "id": "a035",
+      "id": "a040",
       "name": "Research Ready",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -449,7 +491,7 @@
       }
     },
     {
-      "id": "a036",
+      "id": "a041",
       "name": "Worker · Script Prompt",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -472,7 +514,7 @@
       "maxTries": 2
     },
     {
-      "id": "a037",
+      "id": "a042",
       "name": "Prepare Script Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -481,11 +523,11 @@
         300
       ],
       "parameters": {
-        "jsCode": "const cfg = $('Config').first().json;\nconst research = $('Research Ready').first().json;\n\nconst instruction = [\n  'Write a unique faceless video script on the recommended_topic. The script must:',\n  \"- Open with a hook that speaks directly to a radiographer or healthcare worker's real daily frustration or curiosity\",\n  '- Use the AI winning hook style as structural inspiration only — never copy competitor content',\n  '- Explain the AI or automation concept in plain terms a healthcare professional would understand',\n  '- Show a concrete, specific radiology use case — not vague or hypothetical',\n  '- Sound like it comes from someone who has actually worked in both radiology AND AI — use that insider credibility',\n  '- End with a CTA that invites radiographers or AI practitioners to share their own experience',\n  '',\n  'LENGTH IS A HARD REQUIREMENT, not a suggestion. Target ' + cfg.VIDEO_LENGTH_MINUTES +\n    ' minutes at 130 words per minute = ' + Math.round(cfg.VIDEO_LENGTH_MINUTES * 130) +\n    ' words TOTAL. Budget it as:',\n  '  - hook: 60-90 words',\n  '  - EACH of the 5 body sections: ' + Math.round((cfg.VIDEO_LENGTH_MINUTES * 130 - 150) / 5) +\n    ' words minimum (this is per section, not for all five combined)',\n  '  - cta: 60-90 words',\n  'A script materially shorter than ' + Math.round(cfg.VIDEO_LENGTH_MINUTES * 130) +\n    ' words will be rejected and regenerated. Write each section out in full with concrete detail:' +\n  ' the actual tools, the actual n8n nodes, the actual sequence of steps. Do not outline,' +\n  ' summarise, or write section abstracts — write the actual spoken words.',\n  '',\n  // The previous version of this line asked for \"worked examples, specific tools\n  // and real numbers\". \"Real numbers\" is what produced \"a 30% decrease at our\n  // facility\" on the first live run: the model has no numbers, so it invented\n  // them. Length must be reached by explaining more deeply, never by inventing.\n  'REACH THE LENGTH BY GOING DEEPER, NOT BY INVENTING. Add more build detail, more',\n  'of the actual how, more explicit hypotheticals. Never add a statistic, a result,',\n  'a study or a deployment story to fill space — every one of those is an automatic',\n  'rejection under the truthfulness rules above, and padding with them will cost you',\n  'the whole draft.',\n].join('\\n');\n\nconst payload = {\n  research,\n  niche_context: cfg.NICHE_CONTEXT,\n  target_audience: cfg.TARGET_AUDIENCE,\n  video_length_minutes: cfg.VIDEO_LENGTH_MINUTES,\n  instruction,\n};\n\nreturn [{\n  json: {\n    payload_json: JSON.stringify(payload),\n    system_prompt: $('Worker · Script Prompt').first().json.data,\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "const cfg = $('Config').first().json;\nconst research = $('Research Ready').first().json;\n\nconst mem = $('Postgres · Content Memory').first().json || {};\nconst citable_facts = Array.isArray(mem.facts) ? mem.facts : [];\n\nconst words = Math.round(cfg.VIDEO_LENGTH_MINUTES * 130);\nconst sections = cfg.BODY_SECTIONS || 4;\nconst perSection = Math.round((words - 140) / sections);\n\nconst instruction = [\n  'Write a \"DID YOU KNOW?\" educational video on the recommended_topic.',\n  '',\n  'FORMAT. This is not a tutorial and not a talking-head opinion. It is a short',\n  'educational piece built around ONE genuinely surprising, SOURCED fact, and what',\n  'that fact means for someone who operates imaging equipment for a living.',\n  '',\n  '  hook       - state the surprising fact in the first sentence, plainly, and',\n  '               name its source out loud. No throat-clearing, no \"in this video\",',\n  '               no greeting. The first seven words decide whether anyone stays.',\n  '  section 1  - the fact in full: what was actually reported, by whom, and when.',\n  '  section 2  - why it matters to a radiographer specifically, in their shift.',\n  '  section 3  - where AI or automation touches it - the concrete mechanism, the',\n  '               actual tool or n8n node, the actual sequence of steps.',\n  '  section 4  - what a viewer can do about it now.',\n  '  cta        - invite BOTH radiographers and AI practitioners to answer a',\n  '               specific question, not \"let me know what you think\".',\n  '',\n  'SOURCING. citable_facts is the ONLY source you have. Every figure, outcome,',\n  'clearance, product name or study result you state MUST come from it, and you',\n  'MUST name the source in the spoken line (\"Radiology Business reported...\").',\n  'List each one in sourced_claims with the exact source_url from the payload.',\n  'The competitor channel data is NOT a source. It shows you how videos are paced,',\n  'nothing more. A number you saw in a competitor transcript is that creator\\'s',\n  'unverified marketing claim and repeating it is worse than inventing one,',\n  'because it looks sourced.',\n  '',\n  'LENGTH. Target ' + cfg.VIDEO_LENGTH_MINUTES + ' minutes at 130 words per minute = ' +\n    words + ' words TOTAL, in EXACTLY ' + sections + ' body sections.',\n  '  - hook: 40-60 words',\n  '  - EACH of the ' + sections + ' body sections: about ' + perSection +\n    ' words (per section, not for all of them combined)',\n  '  - cta: 40-60 words',\n  'Write the actual spoken words. Do not outline, summarise, or write section',\n  'abstracts. Going long is as wrong as going short: this is a ' +\n    cfg.VIDEO_LENGTH_MINUTES + '-minute video, not a lecture.',\n  '',\n  // The previous version of this line asked for \"worked examples, specific tools\n  // and real numbers\". \"Real numbers\" is what produced \"a 30% decrease at our\n  // facility\" on the first live run: the model had no numbers, so it invented\n  // them. Now there ARE numbers -- but only the ones in citable_facts.\n  'REACH THE LENGTH WITH SOURCED DETAIL AND BUILD DETAIL, NEVER BY INVENTING.',\n  'If you need another beat, take another fact from citable_facts or describe one',\n  'more real step of the build. Never pad with an unsourced statistic, a study, or',\n  'a story about having deployed something.',\n  '',\n  'FOOTAGE. pexels_search_keywords must contain exactly ' + (cfg.FOOTAGE_KEYWORDS || 12) +\n    ' DISTINCT, visually literal search terms. They become the b-roll, one shot every ' +\n    (cfg.SHOT_SECONDS || 4) + ' seconds, so near-duplicates (\"hospital\", \"hospital corridor\")',\n  'produce a video that looks like it repeats. Vary the subject: equipment, people,',\n  'screens, environments, abstract technology.',\n].join('\\n');\n\nconst payload = {\n  research,\n  citable_facts,\n  competitor_material_NOT_CITABLE: 'see research.pacing_patterns - format only, never a source',\n  niche_context: cfg.NICHE_CONTEXT,\n  target_audience: cfg.TARGET_AUDIENCE,\n  video_length_minutes: cfg.VIDEO_LENGTH_MINUTES,\n  body_sections: sections,\n  instruction,\n};\n\nreturn [{\n  json: {\n    payload_json: JSON.stringify(payload),\n    system_prompt: $('Worker · Script Prompt').first().json.data,\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a038",
+      "id": "a043",
       "name": "OpenRouter · Script",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -509,7 +551,7 @@
       "maxTries": 2
     },
     {
-      "id": "a039",
+      "id": "a044",
       "name": "Parse Script",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -522,7 +564,7 @@
       }
     },
     {
-      "id": "a041",
+      "id": "a046",
       "name": "Script JSON OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
@@ -540,7 +582,7 @@
           },
           "conditions": [
             {
-              "id": "a040",
+              "id": "a045",
               "leftValue": "={{ $json.ok }}",
               "rightValue": "",
               "operator": {
@@ -556,7 +598,7 @@
       }
     },
     {
-      "id": "a042",
+      "id": "a047",
       "name": "OpenRouter · Script Retry",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -580,7 +622,7 @@
       "maxTries": 2
     },
     {
-      "id": "a043",
+      "id": "a048",
       "name": "Parse Script (Retry)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -593,7 +635,7 @@
       }
     },
     {
-      "id": "a044",
+      "id": "a049",
       "name": "Script Ready",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -606,7 +648,7 @@
       }
     },
     {
-      "id": "a045",
+      "id": "a050",
       "name": "Worker · Verifier Prompt",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -629,7 +671,7 @@
       "maxTries": 2
     },
     {
-      "id": "a046",
+      "id": "a051",
       "name": "Editorial Checks",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -638,11 +680,11 @@
         300
       ],
       "parameters": {
-        "jsCode": "// Deterministic editorial checks -- Layer 2.\n// Catches fabrication by FORM: the claim classes this pipeline has no source to\n// support. Validated against fixtures/hallucinated-script.json (the real script\n// from execution 654), which must produce at least 6 blocking hits.\nconst cfg = $('Config').first().json;\nconst s = $('Script Ready').first().json;\n\nconst body = Array.isArray(s.script && s.script.body) ? s.script.body : [];\nconst parts = [\n  ['hook', (s.script && s.script.hook) || ''],\n  ...body.map((b, i) => ['body' + (i + 1), b]),\n  ['cta', (s.script && s.script.cta) || ''],\n];\nconst fullText = parts.map((p) => String(p[1] || '')).join(' ');\nconst words = fullText.trim() ? fullText.trim().split(/\\s+/).length : 0;\nconst target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);\n\n// There is NO traceability exemption for percentages, and that is deliberate.\n//\n// Two earlier attempts both failed, and the regression test caught both:\n//   1. Exempting any figure whose digits appear in the research payload was\n//      useless -- the payload is full of incidental numbers (view counts, video\n//      ids, years), so \"50\" appeared somewhere and duly licensed \"up to 50%\".\n//   2. Tightening it to percentages-only STILL let \"up to 50%\" through, because\n//      \"50%\" really does appear in the corpus -- inside a competitor's video\n//      transcript.\n//\n// That second failure is the important one. The corpus is competitor YouTube\n// transcripts. A creator saying \"50%\" in their video is not evidence that\n// automation halves your reporting time; it is their marketing claim, unverified.\n// Treating it as a citable source would launder someone else's unsupported\n// number into this channel's voice.\n//\n// So every percentage and every measured outcome is blocked outright. This is\n// narrow: it does not touch ordinary numbers like \"4 hours\", \"5 steps\" or\n// \"400 integrations\", only claim-shaped figures the host cannot stand behind.\nlet corpus = '';\ntry { corpus = String($('Prepare Research Payload').first().json.payload_json || ''); } catch (e) { corpus = ''; }\n\nconst violations = [];\nconst add = (rule, severity, quote, why) => violations.push({\n  rule, severity, quote: String(quote).slice(0, 200), why, source: 'deterministic',\n});\n\nconst RULES = [\n  { rule: 'fabricated-statistic', severity: 'blocking',\n    re: /\\b\\d+(?:\\.\\d+)?\\s*(?:%|percent\\b)/gi,\n    why: 'A percentage the host cannot stand behind. Competitor transcripts are not evidence.' },\n  { rule: 'measured-outcome-claim', severity: 'blocking',\n    re: /\\b(?:a|an)\\s+\\d+(?:\\.\\d+)?\\s*(?:%|percent)?\\s*(?:decrease|increase|reduction|improvement|drop|rise)\\b/gi,\n    why: 'A measured outcome that was never measured.' },\n  { rule: 'first-person-deployment', severity: 'blocking',\n    re: /\\b(?:at|in)\\s+(?:our|my)\\s+(?:facility|hospital|department|trust|clinic|practice|site|unit)\\b|\\bwe\\s+(?:implemented|deployed|rolled\\s+out|installed|introduced)\\b/gi,\n    why: 'A first-person deployment story. The host has not run this.' },\n  { rule: 'unsourced-study-claim', severity: 'blocking',\n    re: /\\b(?:a\\s+study|studies\\s+(?:show|found)|research\\s+(?:shows|found)|according\\s+to\\s+[^.]{0,40}(?:study|paper|trial|report))\\b/gi,\n    why: 'Cites research that is not in the supplied payload.' },\n  // Advisory on purpose: radiologists are a legitimate topic, so a blocking\n  // regex here would fire on correct usage. The judge decides.\n  { rule: 'profession-confusion', severity: 'advisory',\n    re: /\\bradiologists?\\b/gi,\n    why: 'Mentions radiologists; the audience is radiographers. Judge to adjudicate.' },\n  { rule: 'absolute-claim', severity: 'advisory',\n    re: /\\b(?:guaranteed|never\\s+fails|always\\s+works|100%\\s+accurate|eliminates\\s+all)\\b/gi,\n    why: 'Absolute claim that cannot be supported.' },\n];\n\nfor (const r of RULES) {\n  for (const pair of parts) {\n    const where = pair[0];\n    const hits = String(pair[1] || '').match(r.re);\n    if (!hits) continue;\n    for (const h of hits) {\n      add(r.rule, r.severity, where + ': ' + h, r.why);\n    }\n  }\n}\n\n// Mechanical rulings live here too, so ONE component owns quality.\nif (body.length !== 5) add('structure', 'blocking', body.length + ' body sections', 'Exactly 5 required.');\nif (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');\n\nconst title = (s.seo && s.seo.title) || '';\nif (!title) add('seo-title-missing', 'blocking', '(empty)', 'No SEO title.');\nif (title.length > 60) add('seo-title-length', 'advisory', title, title.length + ' chars, limit 60.');\nif (title && !/(\\bai\\b|automat|radiolog|radiograph|imaging|healthcare)/i.test(title)) {\n  add('seo-title-topic', 'advisory', title, 'Title references neither AI/automation nor radiology.');\n}\n\nconst cta = (s.script && s.script.cta) || '';\nif (!/radiograph/i.test(cta) || !/(\\bAI\\b|practitioner|engineer|developer|automation)/i.test(cta)) {\n  add('weak-cta', 'advisory', cta.slice(0, 160), 'CTA must invite BOTH radiographers and AI practitioners.');\n}\n\nconst kws = Array.isArray(s.pexels_search_keywords) ? s.pexels_search_keywords : [];\nif (kws.length !== 5) add('keywords', 'advisory', kws.length + ' keywords', 'Exactly 5 expected.');\n\nconst blocking = violations.filter((v) => v.severity === 'blocking');\n\nconst judge = {\n  script: s.script,\n  seo: s.seo,\n  research_payload: corpus.slice(0, 24000),\n  deterministic_findings: violations,\n};\n\nconsole.log('editorial checks: ' + words + '/' + target + ' words, ' +\n  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory');\nfor (const v of blocking) console.log('  BLOCKING ' + v.rule + ' -> ' + v.quote);\n\nreturn [{\n  json: {\n    script: s.script,\n    seo: s.seo,\n    pexels_search_keywords: kws,\n    deterministic_violations: violations,\n    deterministic_blocking: blocking.length,\n    word_count: words,\n    word_target: target,\n    judge_payload_json: JSON.stringify(judge),\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "// Deterministic editorial checks -- Layer 2.\n// Catches fabrication by FORM: the claim classes this pipeline has no source to\n// support. Validated against fixtures/hallucinated-script.json (the real script\n// from execution 654), which must produce at least 6 blocking hits.\nconst cfg = $('Config').first().json;\nconst s = $('Script Ready').first().json;\n\nconst body = Array.isArray(s.script && s.script.body) ? s.script.body : [];\nconst parts = [\n  ['hook', (s.script && s.script.hook) || ''],\n  ...body.map((b, i) => ['body' + (i + 1), b]),\n  ['cta', (s.script && s.script.cta) || ''],\n];\nconst fullText = parts.map((p) => String(p[1] || '')).join(' ');\nconst words = fullText.trim() ? fullText.trim().split(/\\s+/).length : 0;\nconst target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);\n\n// There is NO traceability exemption for percentages, and that is deliberate.\n//\n// Two earlier attempts both failed, and the regression test caught both:\n//   1. Exempting any figure whose digits appear in the research payload was\n//      useless -- the payload is full of incidental numbers (view counts, video\n//      ids, years), so \"50\" appeared somewhere and duly licensed \"up to 50%\".\n//   2. Tightening it to percentages-only STILL let \"up to 50%\" through, because\n//      \"50%\" really does appear in the corpus -- inside a competitor's video\n//      transcript.\n//\n// That second failure is the important one. The corpus is competitor YouTube\n// transcripts. A creator saying \"50%\" in their video is not evidence that\n// automation halves your reporting time; it is their marketing claim, unverified.\n// Treating it as a citable source would launder someone else's unsupported\n// number into this channel's voice.\n//\n// So every percentage and every measured outcome is blocked outright. This is\n// narrow: it does not touch ordinary numbers like \"4 hours\", \"5 steps\" or\n// \"400 integrations\", only claim-shaped figures the host cannot stand behind.\n// TWO corpora, and they must never be merged. This is the whole safety\n// property of the sourced-claim exemption below.\n//\n//   citable  - the content-engine archive. Real articles, real outlets, real\n//              URLs. A figure here is checkable.\n//   corpus   - competitor YouTube transcripts. NOT evidence, and never becomes\n//              evidence. Kept only so the judge can spot copied content.\n//\n// Collapsing them is not hypothetical: an earlier traceability check keyed off\n// the research payload and let \"up to 50%\" through, because 50% genuinely\n// appears in a competitor's transcript. A dedicated regression case guards this.\nlet corpus = '';\ntry { corpus = String($('Prepare Research Payload').first().json.payload_json || ''); } catch (e) { corpus = ''; }\n\nlet citableFacts = [];\ntry {\n  const mem = $('Postgres · Content Memory').first().json || {};\n  citableFacts = Array.isArray(mem.facts) ? mem.facts : [];\n} catch (e) { citableFacts = []; }\n\nconst citableText = citableFacts\n  .map((f) => String(f.key_findings || '') + ' ' + String(f.takeaway || ''))\n  .join(' ');\nconst citableUrls = new Set(citableFacts.map((f) => String(f.url || '').trim()).filter(Boolean));\nconst citableSources = citableFacts.map((f) => String(f.source || '').trim()).filter(Boolean);\n\n// A figure is permitted only when the script BACKS it: declared in\n// sourced_claims, pointing at a URL that is actually in the archive, with the\n// figure present in that archive text, and the outlet named in the spoken line.\n// Declaring a source is not enough -- the attribution has to be audible, or the\n// viewer has no way to tell a sourced claim from an invented one.\nconst declared = Array.isArray(s.sourced_claims) ? s.sourced_claims : [];\nfunction isBacked(figure, whereText) {\n  const fig = String(figure).replace(/\\s+/g, '');\n  for (const d of declared) {\n    const url = String((d && d.url) || (d && d.source_url) || '').trim();\n    const name = String((d && d.source_name) || '').trim();\n    const claim = String((d && d.claim) || '').replace(/\\s+/g, '');\n    if (!citableUrls.has(url)) continue;                 // not from the archive\n    if (!claim.includes(fig)) continue;                  // declares a different figure\n    if (!citableText.replace(/\\s+/g, '').includes(fig)) continue; // not actually in the archive\n    if (!name || !whereText.toLowerCase().includes(name.toLowerCase())) continue; // not said aloud\n    return name;\n  }\n  return null;\n}\n\nconst violations = [];\nconst add = (rule, severity, quote, why) => violations.push({\n  rule, severity, quote: String(quote).slice(0, 200), why, source: 'deterministic',\n});\n\nconst RULES = [\n  { rule: 'fabricated-statistic', severity: 'blocking',\n    re: /\\b\\d+(?:\\.\\d+)?\\s*(?:%|percent\\b)/gi,\n    why: 'A percentage the host cannot stand behind. Competitor transcripts are not evidence.' },\n  { rule: 'measured-outcome-claim', severity: 'blocking',\n    re: /\\b(?:a|an)\\s+\\d+(?:\\.\\d+)?\\s*(?:%|percent)?\\s*(?:decrease|increase|reduction|improvement|drop|rise)\\b/gi,\n    why: 'A measured outcome that was never measured.' },\n  { rule: 'first-person-deployment', severity: 'blocking',\n    re: /\\b(?:at|in)\\s+(?:our|my)\\s+(?:facility|hospital|department|trust|clinic|practice|site|unit)\\b|\\bwe\\s+(?:implemented|deployed|rolled\\s+out|installed|introduced)\\b/gi,\n    why: 'A first-person deployment story. The host has not run this.' },\n  { rule: 'unsourced-study-claim', severity: 'blocking',\n    re: /\\b(?:a\\s+study|studies\\s+(?:show|found)|research\\s+(?:shows|found)|according\\s+to\\s+[^.]{0,40}(?:study|paper|trial|report))\\b/gi,\n    why: 'Cites research that is not in the supplied payload.' },\n  // \"I built X in n8n\" is the single most common title on the AI channels this\n  // pipeline researches, and the research step used to hand those formulas to\n  // the writer as the pattern to copy. The formulas are gone from the research\n  // output now; this catches any that survive by imitation. Nothing here was\n  // built by the host, and a faceless channel claiming authorship of a system\n  // it never ran is the same fabrication as inventing a statistic.\n  { rule: 'first-person-build', severity: 'blocking',\n    re: /\\b(?:I|we)\\s+(?:just\\s+|recently\\s+)?(?:built|made|created|developed|designed|coded|wrote|set\\s+up|wired\\s+up|put\\s+together|automated|shipped|launched)\\b/gi,\n    why: 'Claims to have built or made something. Describe how it IS built, not that you built it.' },\n  // A \"Did you know?\" video that opens like every other AI video has already\n  // failed correction 8. Blocking, not advisory: these are trivially avoidable\n  // and their presence is proof the model reached for the generic shape.\n  { rule: 'generic-filler', severity: 'blocking',\n    re: /\\b(?:in\\s+today'?s\\s+video|let'?s\\s+dive\\s+(?:in|into)|buckle\\s+up|without\\s+further\\s+ado|in\\s+this\\s+video,?\\s+(?:I|we)|welcome\\s+back)\\b/gi,\n    why: 'Generic video filler. Open on the fact itself.' },\n  { rule: 'hype-cliche', severity: 'advisory',\n    re: /\\b(?:game[- ]?changer|revolutioni[sz]e|the\\s+future\\s+is\\s+bright|unlock\\s+the\\s+power|take\\s+it\\s+to\\s+the\\s+next\\s+level|cutting[- ]edge|paradigm\\s+shift)\\b/gi,\n    why: 'Marketing cliche. Say the specific thing instead.' },\n  // Advisory on purpose: radiologists are a legitimate topic, so a blocking\n  // regex here would fire on correct usage. The judge decides.\n  { rule: 'profession-confusion', severity: 'advisory',\n    re: /\\bradiologists?\\b/gi,\n    why: 'Mentions radiologists; the audience is radiographers. Judge to adjudicate.' },\n  { rule: 'absolute-claim', severity: 'advisory',\n    re: /\\b(?:guaranteed|never\\s+fails|always\\s+works|100%\\s+accurate|eliminates\\s+all)\\b/gi,\n    why: 'Absolute claim that cannot be supported.' },\n];\n\n// Only figure-shaped rules can be excused by sourcing. A first-person build\n// claim or a piece of generic filler is wrong no matter who reported it.\nconst SOURCEABLE = new Set(['fabricated-statistic', 'measured-outcome-claim']);\nconst sourced = [];\n\nfor (const r of RULES) {\n  for (const pair of parts) {\n    const where = pair[0];\n    const text = String(pair[1] || '');\n    const hits = text.match(r.re);\n    if (!hits) continue;\n    for (const h of hits) {\n      if (SOURCEABLE.has(r.rule)) {\n        const backedBy = isBacked(h, text);\n        if (backedBy) {\n          sourced.push({ figure: h, where, source: backedBy });\n          continue;\n        }\n      }\n      add(r.rule, r.severity, where + ': ' + h, r.why);\n    }\n  }\n}\n\n// The SEO title was previously checked only for length and topic, so\n// \"I Built an AI Radiology Report Writer in n8n (No Code)\" -- an actual\n// generated title -- passed the gate untouched while the same words in the body\n// would have been blocked.\nconst titleText = (s.seo && s.seo.title) || '';\nfor (const r of RULES) {\n  if (r.rule !== 'first-person-build' && r.rule !== 'hype-cliche') continue;\n  const hits = titleText.match(r.re);\n  if (hits) for (const h of hits) add(r.rule, 'blocking', 'seo.title: ' + h, r.why);\n}\n\n// Mechanical rulings live here too, so ONE component owns quality.\nconst wantSections = cfg.BODY_SECTIONS || 4;\nif (body.length !== wantSections) {\n  add('structure', 'blocking', body.length + ' body sections', 'Exactly ' + wantSections + ' required.');\n}\nif (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');\n// Overshoot is now a real failure, not a bonus. A 1606-word draft against a\n// 1040 target produced a 10.9-minute video for an 8-minute slot, and the whole\n// point of the 4-minute format is that it stays 4 minutes.\nif (words > target * 1.35) {\n  add('too-long', 'blocking', words + ' words vs target ' + target, 'Over 135% of target length.');\n}\n\nconst title = (s.seo && s.seo.title) || '';\nif (!title) add('seo-title-missing', 'blocking', '(empty)', 'No SEO title.');\nif (title.length > 60) add('seo-title-length', 'advisory', title, title.length + ' chars, limit 60.');\nif (title && !/(\\bai\\b|automat|radiolog|radiograph|imaging|healthcare)/i.test(title)) {\n  add('seo-title-topic', 'advisory', title, 'Title references neither AI/automation nor radiology.');\n}\n\nconst cta = (s.script && s.script.cta) || '';\nif (!/radiograph/i.test(cta) || !/(\\bAI\\b|practitioner|engineer|developer|automation)/i.test(cta)) {\n  add('weak-cta', 'advisory', cta.slice(0, 160), 'CTA must invite BOTH radiographers and AI practitioners.');\n}\n\n// Keyword count drives clip variety: fewer keywords means fewer unique clips\n// means visible repetition, which is a real defect in the finished video rather\n// than a style note. Near-duplicates defeat the purpose just as badly as a\n// short list, so both are checked.\nconst wantKw = cfg.FOOTAGE_KEYWORDS || 12;\nconst kws = Array.isArray(s.pexels_search_keywords) ? s.pexels_search_keywords : [];\nif (kws.length < wantKw) {\n  add('keywords', 'blocking', kws.length + ' keywords', wantKw + ' distinct keywords required for clip variety.');\n}\nconst kwNorm = new Set(kws.map((k) => String(k || '').toLowerCase().trim()));\nif (kwNorm.size < kws.length) {\n  add('keywords-duplicate', 'blocking', kws.length - kwNorm.size + ' duplicate(s)', 'Keywords must be distinct.');\n}\n\n// A \"Did you know?\" video with nothing sourced is just an opinion piece.\nif (citableFacts.length > 0 && sourced.length === 0 && declared.length === 0) {\n  add('unsourced-video', 'advisory', 'no sourced_claims',\n      'The archive supplied ' + citableFacts.length + ' facts and the script cites none.');\n}\n\nconst blocking = violations.filter((v) => v.severity === 'blocking');\n\nconst judge = {\n  script: s.script,\n  seo: s.seo,\n  sourced_claims: declared,\n  // The judge gets both corpora, LABELLED, because it has to tell a properly\n  // attributed fact from a laundered competitor claim -- and it cannot do that\n  // if the two arrive as one undifferentiated blob.\n  citable_archive: citableFacts,\n  competitor_transcripts_NOT_CITABLE: corpus.slice(0, 16000),\n  deterministic_findings: violations,\n  figures_accepted_as_sourced: sourced,\n};\n\nconsole.log('editorial checks: ' + words + '/' + target + ' words, ' +\n  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory, ' +\n  sourced.length + ' figure(s) accepted as sourced of ' + citableFacts.length + ' archive facts');\nfor (const g of sourced) console.log('  SOURCED ' + g.figure + ' (' + g.source + ') @' + g.where);\nfor (const v of blocking) console.log('  BLOCKING ' + v.rule + ' -> ' + v.quote);\n\nreturn [{\n  json: {\n    script: s.script,\n    seo: s.seo,\n    pexels_search_keywords: kws,\n    sourced_claims: declared,\n    deterministic_violations: violations,\n    deterministic_blocking: blocking.length,\n    figures_sourced: sourced,\n    citable_facts_available: citableFacts.length,\n    word_count: words,\n    word_target: target,\n    judge_payload_json: JSON.stringify(judge),\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a047",
+      "id": "a052",
       "name": "Editorial Verifier",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -666,7 +708,7 @@
       "maxTries": 2
     },
     {
-      "id": "a048",
+      "id": "a053",
       "name": "Editorial Gate",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -675,11 +717,11 @@
         300
       ],
       "parameters": {
-        "jsCode": "// Merges Layer 2 (deterministic) with Layer 3 (judge) and decides.\n// Each node in this gate runs exactly once, so .first() is unambiguous.\nconst checks = $('Editorial Checks').first().json;\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\n\nlet judge = null;\nlet judge_error = null;\ntry {\n  judge = JSON.parse(String(raw).replace(/^\\s*\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`\\s*$/, '').trim());\n} catch (err) {\n  judge_error = err.message;\n}\n\n// A judge that failed to answer must NOT be read as approval. Fail toward\n// caution: an unreadable verdict counts as unverified, not as a pass.\nconst judgeViolations = (judge && Array.isArray(judge.violations) ? judge.violations : [])\n  .map((v) => ({ ...v, source: 'judge' }));\n\n// Advisory deterministic flags the judge explicitly dismissed are dropped;\n// anything it upheld is promoted to a real violation.\nconst upheld = new Set(\n  (judge && Array.isArray(judge.advisory_adjudication) ? judge.advisory_adjudication : [])\n    .filter((a) => a.upheld)\n    .map((a) => String(a.rule))\n);\n\nconst detKept = checks.deterministic_violations.filter(\n  (v) => v.severity === 'blocking' || upheld.has(v.rule)\n);\n\nconst all = [...detKept, ...judgeViolations];\nconst blocking = all.filter((v) => v.severity === 'blocking');\n\nconst verdict = blocking.length === 0 ? 'pass' : 'flagged';\nconst needs_revision = blocking.length > 0;\n\nconsole.log('editorial gate: verdict=' + verdict + ' blocking=' + blocking.length +\n  ' advisory=' + (all.length - blocking.length) + (judge_error ? ' JUDGE_UNPARSEABLE' : ''));\nfor (const v of blocking) console.log('  ' + v.rule + ': ' + String(v.quote).slice(0, 120));\n\nreturn [{\n  json: {\n    script: checks.script,\n    seo: checks.seo,\n    pexels_search_keywords: checks.pexels_search_keywords,\n    word_count: checks.word_count,\n    word_target: checks.word_target,\n    editorial_verdict: verdict,\n    editorial_violations: all,\n    editorial_blocking_count: blocking.length,\n    judge_summary: (judge && judge.summary) || null,\n    judge_error,\n    needs_revision,\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "// Merges Layer 2 (deterministic) with Layer 3 (judge) and decides.\n// Each node in this gate runs exactly once, so .first() is unambiguous.\nconst checks = $('Editorial Checks').first().json;\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\n\nlet judge = null;\nlet judge_error = null;\ntry {\n  judge = JSON.parse(String(raw).replace(/^\\s*\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`\\s*$/, '').trim());\n} catch (err) {\n  judge_error = err.message;\n}\n\n// A judge that failed to answer must NOT be read as approval. Fail toward\n// caution: an unreadable verdict counts as unverified, not as a pass.\nconst judgeViolations = (judge && Array.isArray(judge.violations) ? judge.violations : [])\n  .map((v) => ({ ...v, source: 'judge' }));\n\n// Advisory deterministic flags the judge explicitly dismissed are dropped;\n// anything it upheld is promoted to a real violation.\nconst upheld = new Set(\n  (judge && Array.isArray(judge.advisory_adjudication) ? judge.advisory_adjudication : [])\n    .filter((a) => a.upheld)\n    .map((a) => String(a.rule))\n);\n\nconst detKept = checks.deterministic_violations.filter(\n  (v) => v.severity === 'blocking' || upheld.has(v.rule)\n);\n\nconst all = [...detKept, ...judgeViolations];\nconst blocking = all.filter((v) => v.severity === 'blocking');\n\nconst verdict = blocking.length === 0 ? 'pass' : 'flagged';\nconst needs_revision = blocking.length > 0;\n\nconsole.log('editorial gate: verdict=' + verdict + ' blocking=' + blocking.length +\n  ' advisory=' + (all.length - blocking.length) + (judge_error ? ' JUDGE_UNPARSEABLE' : ''));\nfor (const v of blocking) console.log('  ' + v.rule + ': ' + String(v.quote).slice(0, 120));\n\nreturn [{\n  json: {\n    script: checks.script,\n    seo: checks.seo,\n    pexels_search_keywords: checks.pexels_search_keywords,\n    word_count: checks.word_count,\n    word_target: checks.word_target,\n    editorial_verdict: verdict,\n    editorial_violations: all,\n    editorial_blocking_count: blocking.length,\n    figures_sourced: checks.figures_sourced || [],\n    citable_facts_available: checks.citable_facts_available || 0,\n    sourced_claims: checks.sourced_claims || [],\n    judge_summary: (judge && judge.summary) || null,\n    judge_error,\n    needs_revision,\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a049",
+      "id": "a054",
       "name": "Editorial Checks (Round 2)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -688,11 +730,11 @@
         700
       ],
       "parameters": {
-        "jsCode": "// Deterministic editorial checks -- Layer 2.\n// Catches fabrication by FORM: the claim classes this pipeline has no source to\n// support. Validated against fixtures/hallucinated-script.json (the real script\n// from execution 654), which must produce at least 6 blocking hits.\nconst cfg = $('Config').first().json;\nconst s = $('Revision Parsed').first().json;\n\nconst body = Array.isArray(s.script && s.script.body) ? s.script.body : [];\nconst parts = [\n  ['hook', (s.script && s.script.hook) || ''],\n  ...body.map((b, i) => ['body' + (i + 1), b]),\n  ['cta', (s.script && s.script.cta) || ''],\n];\nconst fullText = parts.map((p) => String(p[1] || '')).join(' ');\nconst words = fullText.trim() ? fullText.trim().split(/\\s+/).length : 0;\nconst target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);\n\n// There is NO traceability exemption for percentages, and that is deliberate.\n//\n// Two earlier attempts both failed, and the regression test caught both:\n//   1. Exempting any figure whose digits appear in the research payload was\n//      useless -- the payload is full of incidental numbers (view counts, video\n//      ids, years), so \"50\" appeared somewhere and duly licensed \"up to 50%\".\n//   2. Tightening it to percentages-only STILL let \"up to 50%\" through, because\n//      \"50%\" really does appear in the corpus -- inside a competitor's video\n//      transcript.\n//\n// That second failure is the important one. The corpus is competitor YouTube\n// transcripts. A creator saying \"50%\" in their video is not evidence that\n// automation halves your reporting time; it is their marketing claim, unverified.\n// Treating it as a citable source would launder someone else's unsupported\n// number into this channel's voice.\n//\n// So every percentage and every measured outcome is blocked outright. This is\n// narrow: it does not touch ordinary numbers like \"4 hours\", \"5 steps\" or\n// \"400 integrations\", only claim-shaped figures the host cannot stand behind.\nlet corpus = '';\ntry { corpus = String($('Prepare Research Payload').first().json.payload_json || ''); } catch (e) { corpus = ''; }\n\nconst violations = [];\nconst add = (rule, severity, quote, why) => violations.push({\n  rule, severity, quote: String(quote).slice(0, 200), why, source: 'deterministic',\n});\n\nconst RULES = [\n  { rule: 'fabricated-statistic', severity: 'blocking',\n    re: /\\b\\d+(?:\\.\\d+)?\\s*(?:%|percent\\b)/gi,\n    why: 'A percentage the host cannot stand behind. Competitor transcripts are not evidence.' },\n  { rule: 'measured-outcome-claim', severity: 'blocking',\n    re: /\\b(?:a|an)\\s+\\d+(?:\\.\\d+)?\\s*(?:%|percent)?\\s*(?:decrease|increase|reduction|improvement|drop|rise)\\b/gi,\n    why: 'A measured outcome that was never measured.' },\n  { rule: 'first-person-deployment', severity: 'blocking',\n    re: /\\b(?:at|in)\\s+(?:our|my)\\s+(?:facility|hospital|department|trust|clinic|practice|site|unit)\\b|\\bwe\\s+(?:implemented|deployed|rolled\\s+out|installed|introduced)\\b/gi,\n    why: 'A first-person deployment story. The host has not run this.' },\n  { rule: 'unsourced-study-claim', severity: 'blocking',\n    re: /\\b(?:a\\s+study|studies\\s+(?:show|found)|research\\s+(?:shows|found)|according\\s+to\\s+[^.]{0,40}(?:study|paper|trial|report))\\b/gi,\n    why: 'Cites research that is not in the supplied payload.' },\n  // Advisory on purpose: radiologists are a legitimate topic, so a blocking\n  // regex here would fire on correct usage. The judge decides.\n  { rule: 'profession-confusion', severity: 'advisory',\n    re: /\\bradiologists?\\b/gi,\n    why: 'Mentions radiologists; the audience is radiographers. Judge to adjudicate.' },\n  { rule: 'absolute-claim', severity: 'advisory',\n    re: /\\b(?:guaranteed|never\\s+fails|always\\s+works|100%\\s+accurate|eliminates\\s+all)\\b/gi,\n    why: 'Absolute claim that cannot be supported.' },\n];\n\nfor (const r of RULES) {\n  for (const pair of parts) {\n    const where = pair[0];\n    const hits = String(pair[1] || '').match(r.re);\n    if (!hits) continue;\n    for (const h of hits) {\n      add(r.rule, r.severity, where + ': ' + h, r.why);\n    }\n  }\n}\n\n// Mechanical rulings live here too, so ONE component owns quality.\nif (body.length !== 5) add('structure', 'blocking', body.length + ' body sections', 'Exactly 5 required.');\nif (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');\n\nconst title = (s.seo && s.seo.title) || '';\nif (!title) add('seo-title-missing', 'blocking', '(empty)', 'No SEO title.');\nif (title.length > 60) add('seo-title-length', 'advisory', title, title.length + ' chars, limit 60.');\nif (title && !/(\\bai\\b|automat|radiolog|radiograph|imaging|healthcare)/i.test(title)) {\n  add('seo-title-topic', 'advisory', title, 'Title references neither AI/automation nor radiology.');\n}\n\nconst cta = (s.script && s.script.cta) || '';\nif (!/radiograph/i.test(cta) || !/(\\bAI\\b|practitioner|engineer|developer|automation)/i.test(cta)) {\n  add('weak-cta', 'advisory', cta.slice(0, 160), 'CTA must invite BOTH radiographers and AI practitioners.');\n}\n\nconst kws = Array.isArray(s.pexels_search_keywords) ? s.pexels_search_keywords : [];\nif (kws.length !== 5) add('keywords', 'advisory', kws.length + ' keywords', 'Exactly 5 expected.');\n\nconst blocking = violations.filter((v) => v.severity === 'blocking');\n\nconst judge = {\n  script: s.script,\n  seo: s.seo,\n  research_payload: corpus.slice(0, 24000),\n  deterministic_findings: violations,\n};\n\nconsole.log('editorial checks: ' + words + '/' + target + ' words, ' +\n  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory');\nfor (const v of blocking) console.log('  BLOCKING ' + v.rule + ' -> ' + v.quote);\n\nreturn [{\n  json: {\n    script: s.script,\n    seo: s.seo,\n    pexels_search_keywords: kws,\n    deterministic_violations: violations,\n    deterministic_blocking: blocking.length,\n    word_count: words,\n    word_target: target,\n    judge_payload_json: JSON.stringify(judge),\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "// Deterministic editorial checks -- Layer 2.\n// Catches fabrication by FORM: the claim classes this pipeline has no source to\n// support. Validated against fixtures/hallucinated-script.json (the real script\n// from execution 654), which must produce at least 6 blocking hits.\nconst cfg = $('Config').first().json;\nconst s = $('Revision Parsed').first().json;\n\nconst body = Array.isArray(s.script && s.script.body) ? s.script.body : [];\nconst parts = [\n  ['hook', (s.script && s.script.hook) || ''],\n  ...body.map((b, i) => ['body' + (i + 1), b]),\n  ['cta', (s.script && s.script.cta) || ''],\n];\nconst fullText = parts.map((p) => String(p[1] || '')).join(' ');\nconst words = fullText.trim() ? fullText.trim().split(/\\s+/).length : 0;\nconst target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);\n\n// There is NO traceability exemption for percentages, and that is deliberate.\n//\n// Two earlier attempts both failed, and the regression test caught both:\n//   1. Exempting any figure whose digits appear in the research payload was\n//      useless -- the payload is full of incidental numbers (view counts, video\n//      ids, years), so \"50\" appeared somewhere and duly licensed \"up to 50%\".\n//   2. Tightening it to percentages-only STILL let \"up to 50%\" through, because\n//      \"50%\" really does appear in the corpus -- inside a competitor's video\n//      transcript.\n//\n// That second failure is the important one. The corpus is competitor YouTube\n// transcripts. A creator saying \"50%\" in their video is not evidence that\n// automation halves your reporting time; it is their marketing claim, unverified.\n// Treating it as a citable source would launder someone else's unsupported\n// number into this channel's voice.\n//\n// So every percentage and every measured outcome is blocked outright. This is\n// narrow: it does not touch ordinary numbers like \"4 hours\", \"5 steps\" or\n// \"400 integrations\", only claim-shaped figures the host cannot stand behind.\n// TWO corpora, and they must never be merged. This is the whole safety\n// property of the sourced-claim exemption below.\n//\n//   citable  - the content-engine archive. Real articles, real outlets, real\n//              URLs. A figure here is checkable.\n//   corpus   - competitor YouTube transcripts. NOT evidence, and never becomes\n//              evidence. Kept only so the judge can spot copied content.\n//\n// Collapsing them is not hypothetical: an earlier traceability check keyed off\n// the research payload and let \"up to 50%\" through, because 50% genuinely\n// appears in a competitor's transcript. A dedicated regression case guards this.\nlet corpus = '';\ntry { corpus = String($('Prepare Research Payload').first().json.payload_json || ''); } catch (e) { corpus = ''; }\n\nlet citableFacts = [];\ntry {\n  const mem = $('Postgres · Content Memory').first().json || {};\n  citableFacts = Array.isArray(mem.facts) ? mem.facts : [];\n} catch (e) { citableFacts = []; }\n\nconst citableText = citableFacts\n  .map((f) => String(f.key_findings || '') + ' ' + String(f.takeaway || ''))\n  .join(' ');\nconst citableUrls = new Set(citableFacts.map((f) => String(f.url || '').trim()).filter(Boolean));\nconst citableSources = citableFacts.map((f) => String(f.source || '').trim()).filter(Boolean);\n\n// A figure is permitted only when the script BACKS it: declared in\n// sourced_claims, pointing at a URL that is actually in the archive, with the\n// figure present in that archive text, and the outlet named in the spoken line.\n// Declaring a source is not enough -- the attribution has to be audible, or the\n// viewer has no way to tell a sourced claim from an invented one.\nconst declared = Array.isArray(s.sourced_claims) ? s.sourced_claims : [];\nfunction isBacked(figure, whereText) {\n  const fig = String(figure).replace(/\\s+/g, '');\n  for (const d of declared) {\n    const url = String((d && d.url) || (d && d.source_url) || '').trim();\n    const name = String((d && d.source_name) || '').trim();\n    const claim = String((d && d.claim) || '').replace(/\\s+/g, '');\n    if (!citableUrls.has(url)) continue;                 // not from the archive\n    if (!claim.includes(fig)) continue;                  // declares a different figure\n    if (!citableText.replace(/\\s+/g, '').includes(fig)) continue; // not actually in the archive\n    if (!name || !whereText.toLowerCase().includes(name.toLowerCase())) continue; // not said aloud\n    return name;\n  }\n  return null;\n}\n\nconst violations = [];\nconst add = (rule, severity, quote, why) => violations.push({\n  rule, severity, quote: String(quote).slice(0, 200), why, source: 'deterministic',\n});\n\nconst RULES = [\n  { rule: 'fabricated-statistic', severity: 'blocking',\n    re: /\\b\\d+(?:\\.\\d+)?\\s*(?:%|percent\\b)/gi,\n    why: 'A percentage the host cannot stand behind. Competitor transcripts are not evidence.' },\n  { rule: 'measured-outcome-claim', severity: 'blocking',\n    re: /\\b(?:a|an)\\s+\\d+(?:\\.\\d+)?\\s*(?:%|percent)?\\s*(?:decrease|increase|reduction|improvement|drop|rise)\\b/gi,\n    why: 'A measured outcome that was never measured.' },\n  { rule: 'first-person-deployment', severity: 'blocking',\n    re: /\\b(?:at|in)\\s+(?:our|my)\\s+(?:facility|hospital|department|trust|clinic|practice|site|unit)\\b|\\bwe\\s+(?:implemented|deployed|rolled\\s+out|installed|introduced)\\b/gi,\n    why: 'A first-person deployment story. The host has not run this.' },\n  { rule: 'unsourced-study-claim', severity: 'blocking',\n    re: /\\b(?:a\\s+study|studies\\s+(?:show|found)|research\\s+(?:shows|found)|according\\s+to\\s+[^.]{0,40}(?:study|paper|trial|report))\\b/gi,\n    why: 'Cites research that is not in the supplied payload.' },\n  // \"I built X in n8n\" is the single most common title on the AI channels this\n  // pipeline researches, and the research step used to hand those formulas to\n  // the writer as the pattern to copy. The formulas are gone from the research\n  // output now; this catches any that survive by imitation. Nothing here was\n  // built by the host, and a faceless channel claiming authorship of a system\n  // it never ran is the same fabrication as inventing a statistic.\n  { rule: 'first-person-build', severity: 'blocking',\n    re: /\\b(?:I|we)\\s+(?:just\\s+|recently\\s+)?(?:built|made|created|developed|designed|coded|wrote|set\\s+up|wired\\s+up|put\\s+together|automated|shipped|launched)\\b/gi,\n    why: 'Claims to have built or made something. Describe how it IS built, not that you built it.' },\n  // A \"Did you know?\" video that opens like every other AI video has already\n  // failed correction 8. Blocking, not advisory: these are trivially avoidable\n  // and their presence is proof the model reached for the generic shape.\n  { rule: 'generic-filler', severity: 'blocking',\n    re: /\\b(?:in\\s+today'?s\\s+video|let'?s\\s+dive\\s+(?:in|into)|buckle\\s+up|without\\s+further\\s+ado|in\\s+this\\s+video,?\\s+(?:I|we)|welcome\\s+back)\\b/gi,\n    why: 'Generic video filler. Open on the fact itself.' },\n  { rule: 'hype-cliche', severity: 'advisory',\n    re: /\\b(?:game[- ]?changer|revolutioni[sz]e|the\\s+future\\s+is\\s+bright|unlock\\s+the\\s+power|take\\s+it\\s+to\\s+the\\s+next\\s+level|cutting[- ]edge|paradigm\\s+shift)\\b/gi,\n    why: 'Marketing cliche. Say the specific thing instead.' },\n  // Advisory on purpose: radiologists are a legitimate topic, so a blocking\n  // regex here would fire on correct usage. The judge decides.\n  { rule: 'profession-confusion', severity: 'advisory',\n    re: /\\bradiologists?\\b/gi,\n    why: 'Mentions radiologists; the audience is radiographers. Judge to adjudicate.' },\n  { rule: 'absolute-claim', severity: 'advisory',\n    re: /\\b(?:guaranteed|never\\s+fails|always\\s+works|100%\\s+accurate|eliminates\\s+all)\\b/gi,\n    why: 'Absolute claim that cannot be supported.' },\n];\n\n// Only figure-shaped rules can be excused by sourcing. A first-person build\n// claim or a piece of generic filler is wrong no matter who reported it.\nconst SOURCEABLE = new Set(['fabricated-statistic', 'measured-outcome-claim']);\nconst sourced = [];\n\nfor (const r of RULES) {\n  for (const pair of parts) {\n    const where = pair[0];\n    const text = String(pair[1] || '');\n    const hits = text.match(r.re);\n    if (!hits) continue;\n    for (const h of hits) {\n      if (SOURCEABLE.has(r.rule)) {\n        const backedBy = isBacked(h, text);\n        if (backedBy) {\n          sourced.push({ figure: h, where, source: backedBy });\n          continue;\n        }\n      }\n      add(r.rule, r.severity, where + ': ' + h, r.why);\n    }\n  }\n}\n\n// The SEO title was previously checked only for length and topic, so\n// \"I Built an AI Radiology Report Writer in n8n (No Code)\" -- an actual\n// generated title -- passed the gate untouched while the same words in the body\n// would have been blocked.\nconst titleText = (s.seo && s.seo.title) || '';\nfor (const r of RULES) {\n  if (r.rule !== 'first-person-build' && r.rule !== 'hype-cliche') continue;\n  const hits = titleText.match(r.re);\n  if (hits) for (const h of hits) add(r.rule, 'blocking', 'seo.title: ' + h, r.why);\n}\n\n// Mechanical rulings live here too, so ONE component owns quality.\nconst wantSections = cfg.BODY_SECTIONS || 4;\nif (body.length !== wantSections) {\n  add('structure', 'blocking', body.length + ' body sections', 'Exactly ' + wantSections + ' required.');\n}\nif (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');\n// Overshoot is now a real failure, not a bonus. A 1606-word draft against a\n// 1040 target produced a 10.9-minute video for an 8-minute slot, and the whole\n// point of the 4-minute format is that it stays 4 minutes.\nif (words > target * 1.35) {\n  add('too-long', 'blocking', words + ' words vs target ' + target, 'Over 135% of target length.');\n}\n\nconst title = (s.seo && s.seo.title) || '';\nif (!title) add('seo-title-missing', 'blocking', '(empty)', 'No SEO title.');\nif (title.length > 60) add('seo-title-length', 'advisory', title, title.length + ' chars, limit 60.');\nif (title && !/(\\bai\\b|automat|radiolog|radiograph|imaging|healthcare)/i.test(title)) {\n  add('seo-title-topic', 'advisory', title, 'Title references neither AI/automation nor radiology.');\n}\n\nconst cta = (s.script && s.script.cta) || '';\nif (!/radiograph/i.test(cta) || !/(\\bAI\\b|practitioner|engineer|developer|automation)/i.test(cta)) {\n  add('weak-cta', 'advisory', cta.slice(0, 160), 'CTA must invite BOTH radiographers and AI practitioners.');\n}\n\n// Keyword count drives clip variety: fewer keywords means fewer unique clips\n// means visible repetition, which is a real defect in the finished video rather\n// than a style note. Near-duplicates defeat the purpose just as badly as a\n// short list, so both are checked.\nconst wantKw = cfg.FOOTAGE_KEYWORDS || 12;\nconst kws = Array.isArray(s.pexels_search_keywords) ? s.pexels_search_keywords : [];\nif (kws.length < wantKw) {\n  add('keywords', 'blocking', kws.length + ' keywords', wantKw + ' distinct keywords required for clip variety.');\n}\nconst kwNorm = new Set(kws.map((k) => String(k || '').toLowerCase().trim()));\nif (kwNorm.size < kws.length) {\n  add('keywords-duplicate', 'blocking', kws.length - kwNorm.size + ' duplicate(s)', 'Keywords must be distinct.');\n}\n\n// A \"Did you know?\" video with nothing sourced is just an opinion piece.\nif (citableFacts.length > 0 && sourced.length === 0 && declared.length === 0) {\n  add('unsourced-video', 'advisory', 'no sourced_claims',\n      'The archive supplied ' + citableFacts.length + ' facts and the script cites none.');\n}\n\nconst blocking = violations.filter((v) => v.severity === 'blocking');\n\nconst judge = {\n  script: s.script,\n  seo: s.seo,\n  sourced_claims: declared,\n  // The judge gets both corpora, LABELLED, because it has to tell a properly\n  // attributed fact from a laundered competitor claim -- and it cannot do that\n  // if the two arrive as one undifferentiated blob.\n  citable_archive: citableFacts,\n  competitor_transcripts_NOT_CITABLE: corpus.slice(0, 16000),\n  deterministic_findings: violations,\n  figures_accepted_as_sourced: sourced,\n};\n\nconsole.log('editorial checks: ' + words + '/' + target + ' words, ' +\n  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory, ' +\n  sourced.length + ' figure(s) accepted as sourced of ' + citableFacts.length + ' archive facts');\nfor (const g of sourced) console.log('  SOURCED ' + g.figure + ' (' + g.source + ') @' + g.where);\nfor (const v of blocking) console.log('  BLOCKING ' + v.rule + ' -> ' + v.quote);\n\nreturn [{\n  json: {\n    script: s.script,\n    seo: s.seo,\n    pexels_search_keywords: kws,\n    sourced_claims: declared,\n    deterministic_violations: violations,\n    deterministic_blocking: blocking.length,\n    figures_sourced: sourced,\n    citable_facts_available: citableFacts.length,\n    word_count: words,\n    word_target: target,\n    judge_payload_json: JSON.stringify(judge),\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a050",
+      "id": "a055",
       "name": "Editorial Verifier (Round 2)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -716,7 +758,7 @@
       "maxTries": 2
     },
     {
-      "id": "a051",
+      "id": "a056",
       "name": "Editorial Gate (Round 2)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -725,11 +767,11 @@
         700
       ],
       "parameters": {
-        "jsCode": "// Merges Layer 2 (deterministic) with Layer 3 (judge) and decides.\n// Each node in this gate runs exactly once, so .first() is unambiguous.\nconst checks = $('Editorial Checks (Round 2)').first().json;\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\n\nlet judge = null;\nlet judge_error = null;\ntry {\n  judge = JSON.parse(String(raw).replace(/^\\s*\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`\\s*$/, '').trim());\n} catch (err) {\n  judge_error = err.message;\n}\n\n// A judge that failed to answer must NOT be read as approval. Fail toward\n// caution: an unreadable verdict counts as unverified, not as a pass.\nconst judgeViolations = (judge && Array.isArray(judge.violations) ? judge.violations : [])\n  .map((v) => ({ ...v, source: 'judge' }));\n\n// Advisory deterministic flags the judge explicitly dismissed are dropped;\n// anything it upheld is promoted to a real violation.\nconst upheld = new Set(\n  (judge && Array.isArray(judge.advisory_adjudication) ? judge.advisory_adjudication : [])\n    .filter((a) => a.upheld)\n    .map((a) => String(a.rule))\n);\n\nconst detKept = checks.deterministic_violations.filter(\n  (v) => v.severity === 'blocking' || upheld.has(v.rule)\n);\n\nconst all = [...detKept, ...judgeViolations];\nconst blocking = all.filter((v) => v.severity === 'blocking');\n\nconst verdict = blocking.length === 0 ? 'pass' : 'flagged';\nconst needs_revision = false;\n\nconsole.log('editorial gate: verdict=' + verdict + ' blocking=' + blocking.length +\n  ' advisory=' + (all.length - blocking.length) + (judge_error ? ' JUDGE_UNPARSEABLE' : ''));\nfor (const v of blocking) console.log('  ' + v.rule + ': ' + String(v.quote).slice(0, 120));\n\nreturn [{\n  json: {\n    script: checks.script,\n    seo: checks.seo,\n    pexels_search_keywords: checks.pexels_search_keywords,\n    word_count: checks.word_count,\n    word_target: checks.word_target,\n    editorial_verdict: verdict,\n    editorial_violations: all,\n    editorial_blocking_count: blocking.length,\n    judge_summary: (judge && judge.summary) || null,\n    judge_error,\n    needs_revision,\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "// Merges Layer 2 (deterministic) with Layer 3 (judge) and decides.\n// Each node in this gate runs exactly once, so .first() is unambiguous.\nconst checks = $('Editorial Checks (Round 2)').first().json;\nconst raw = $input.first().json?.choices?.[0]?.message?.content ?? '';\n\nlet judge = null;\nlet judge_error = null;\ntry {\n  judge = JSON.parse(String(raw).replace(/^\\s*\\`\\`\\`(?:json)?/i, '').replace(/\\`\\`\\`\\s*$/, '').trim());\n} catch (err) {\n  judge_error = err.message;\n}\n\n// A judge that failed to answer must NOT be read as approval. Fail toward\n// caution: an unreadable verdict counts as unverified, not as a pass.\nconst judgeViolations = (judge && Array.isArray(judge.violations) ? judge.violations : [])\n  .map((v) => ({ ...v, source: 'judge' }));\n\n// Advisory deterministic flags the judge explicitly dismissed are dropped;\n// anything it upheld is promoted to a real violation.\nconst upheld = new Set(\n  (judge && Array.isArray(judge.advisory_adjudication) ? judge.advisory_adjudication : [])\n    .filter((a) => a.upheld)\n    .map((a) => String(a.rule))\n);\n\nconst detKept = checks.deterministic_violations.filter(\n  (v) => v.severity === 'blocking' || upheld.has(v.rule)\n);\n\nconst all = [...detKept, ...judgeViolations];\nconst blocking = all.filter((v) => v.severity === 'blocking');\n\nconst verdict = blocking.length === 0 ? 'pass' : 'flagged';\nconst needs_revision = false;\n\nconsole.log('editorial gate: verdict=' + verdict + ' blocking=' + blocking.length +\n  ' advisory=' + (all.length - blocking.length) + (judge_error ? ' JUDGE_UNPARSEABLE' : ''));\nfor (const v of blocking) console.log('  ' + v.rule + ': ' + String(v.quote).slice(0, 120));\n\nreturn [{\n  json: {\n    script: checks.script,\n    seo: checks.seo,\n    pexels_search_keywords: checks.pexels_search_keywords,\n    word_count: checks.word_count,\n    word_target: checks.word_target,\n    editorial_verdict: verdict,\n    editorial_violations: all,\n    editorial_blocking_count: blocking.length,\n    figures_sourced: checks.figures_sourced || [],\n    citable_facts_available: checks.citable_facts_available || 0,\n    sourced_claims: checks.sourced_claims || [],\n    judge_summary: (judge && judge.summary) || null,\n    judge_error,\n    needs_revision,\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a053",
+      "id": "a058",
       "name": "Needs Revision?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
@@ -747,7 +789,7 @@
           },
           "conditions": [
             {
-              "id": "a052",
+              "id": "a057",
               "leftValue": "={{ $json.needs_revision }}",
               "rightValue": "",
               "operator": {
@@ -763,7 +805,7 @@
       }
     },
     {
-      "id": "a054",
+      "id": "a059",
       "name": "Prepare Revision",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -776,7 +818,7 @@
       }
     },
     {
-      "id": "a055",
+      "id": "a060",
       "name": "OpenRouter · Script Revise",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -800,7 +842,7 @@
       "maxTries": 2
     },
     {
-      "id": "a056",
+      "id": "a061",
       "name": "Parse Script (Revised)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -813,7 +855,7 @@
       }
     },
     {
-      "id": "a057",
+      "id": "a062",
       "name": "Revision Parsed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -826,7 +868,7 @@
       }
     },
     {
-      "id": "a058",
+      "id": "a063",
       "name": "Script Approved",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -835,11 +877,11 @@
         300
       ],
       "parameters": {
-        "jsCode": "// Single join point for the clean path and the revised path. Everything\n// downstream reads from HERE, never from Script Ready, so no consumer can\n// accidentally pick up the unreviewed draft.\nconst g = $input.first().json;\n\nconst blocking = (g.editorial_violations || []).filter((v) => v.severity === 'blocking');\nconst s = g.script;\n\nif (!s || !s.hook) throw new Error('Script Approved: no script survived the editorial gate.');\n\nconsole.log('APPROVED verdict=' + g.editorial_verdict + ' blocking=' + blocking.length +\n  ' words=' + g.word_count + '/' + g.word_target);\n\nreturn [{\n  json: {\n    script: s,\n    seo: g.seo,\n    pexels_search_keywords: g.pexels_search_keywords,\n    word_count: g.word_count,\n    word_target: g.word_target,\n    editorial_verdict: g.editorial_verdict,\n    editorial_violations: g.editorial_violations || [],\n    editorial_blocking_count: blocking.length,\n    judge_summary: g.judge_summary || null,\n    judge_error: g.judge_error || null,\n    revision_rounds: $('Editorial Gate').first().json.needs_revision ? 1 : 0,\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "// Single join point for the clean path and the revised path. Everything\n// downstream reads from HERE, never from Script Ready, so no consumer can\n// accidentally pick up the unreviewed draft.\nconst g = $input.first().json;\n\nconst blocking = (g.editorial_violations || []).filter((v) => v.severity === 'blocking');\nconst s = g.script;\n\nif (!s || !s.hook) throw new Error('Script Approved: no script survived the editorial gate.');\n\nconsole.log('APPROVED verdict=' + g.editorial_verdict + ' blocking=' + blocking.length +\n  ' words=' + g.word_count + '/' + g.word_target);\n\nreturn [{\n  json: {\n    script: s,\n    seo: g.seo,\n    pexels_search_keywords: g.pexels_search_keywords,\n    word_count: g.word_count,\n    word_target: g.word_target,\n    editorial_verdict: g.editorial_verdict,\n    editorial_violations: g.editorial_violations || [],\n    figures_sourced: g.figures_sourced || [],\n    citable_facts_available: g.citable_facts_available || 0,\n    sourced_claims: g.sourced_claims || [],\n    editorial_blocking_count: blocking.length,\n    judge_summary: g.judge_summary || null,\n    judge_error: g.judge_error || null,\n    revision_rounds: $('Editorial Gate').first().json.needs_revision ? 1 : 0,\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a059",
+      "id": "a064",
       "name": "Split Keywords",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -848,11 +890,11 @@
         300
       ],
       "parameters": {
-        "jsCode": "const s = $('Script Approved').first().json;\nconst kws = (s.pexels_search_keywords || [])\n  .map((k) => String(k || '').trim())\n  .filter(Boolean)\n  .slice(0, 5);\n\n// A model that returned no keywords should not sink a finished script.\nif (kws.length === 0) {\n  kws.push('hospital technology', 'medical scan', 'computer screen code');\n}\n\nreturn kws.map((keyword) => ({ json: { keyword }, pairedItem: { item: 0 } }));"
+        "jsCode": "const cfg = $('Config').first().json;\nconst s = $('Script Approved').first().json;\n\n// De-duplicated case-insensitively: two keywords that differ only by case fetch\n// the same clips from Pexels and reintroduce the repetition this is meant to fix.\nconst seen = new Set();\nconst kws = [];\nfor (const raw of s.pexels_search_keywords || []) {\n  const k = String(raw || '').trim();\n  if (!k) continue;\n  const key = k.toLowerCase();\n  if (seen.has(key)) continue;\n  seen.add(key);\n  kws.push(k);\n}\n\n// A model that returned too few keywords should not sink a finished script, but\n// it must not silently produce a repetitive video either. Top up from a spread\n// of visually distinct fallbacks -- deliberately different subjects, not\n// variations on one.\nconst FALLBACK = [\n  'hospital corridor', 'mri scanner', 'ct scan machine', 'radiographer at work',\n  'medical monitor display', 'code on screen', 'server room', 'doctor reviewing scan',\n  'x-ray image', 'hospital reception', 'laptop typing closeup', 'data visualization',\n];\nfor (const f of FALLBACK) {\n  if (kws.length >= (cfg.FOOTAGE_KEYWORDS || 12)) break;\n  if (!seen.has(f.toLowerCase())) { seen.add(f.toLowerCase()); kws.push(f); }\n}\n\nconst final = kws.slice(0, cfg.FOOTAGE_KEYWORDS || 12);\nconsole.log('footage keywords: ' + final.length + ' -> ' + final.join(', '));\nreturn final.map((keyword) => ({ json: { keyword }, pairedItem: { item: 0 } }));"
       }
     },
     {
-      "id": "a060",
+      "id": "a065",
       "name": "Pexels · Search Footage",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -873,7 +915,7 @@
             },
             {
               "name": "per_page",
-              "value": "2"
+              "value": "={{ $('Config').first().json.FOOTAGE_PER_KEYWORD }}"
             },
             {
               "name": "orientation",
@@ -894,7 +936,7 @@
       "maxTries": 2
     },
     {
-      "id": "a061",
+      "id": "a066",
       "name": "Collect Footage URLs",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -907,7 +949,7 @@
       }
     },
     {
-      "id": "a062",
+      "id": "a067",
       "name": "Worker · Render Video",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -920,7 +962,7 @@
         "url": "={{ $('Config').first().json.MEDIA_WORKER_URL }}/render",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ script_text: $json.full_script, footage_urls: $json.footage_urls, title: $json.title }) }}",
+        "jsonBody": "={{ JSON.stringify({ script_text: $json.full_script, footage_urls: $json.footage_urls, title: $json.title, shot_seconds: $('Config').first().json.SHOT_SECONDS, subtitles: true }) }}",
         "options": {
           "timeout": 60000
         }
@@ -929,7 +971,7 @@
       "maxTries": 2
     },
     {
-      "id": "a063",
+      "id": "a068",
       "name": "Wait · Render Poll",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
@@ -943,7 +985,7 @@
       }
     },
     {
-      "id": "a064",
+      "id": "a069",
       "name": "Worker · Render Status",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -961,7 +1003,7 @@
       "maxTries": 3
     },
     {
-      "id": "a067",
+      "id": "a072",
       "name": "Switch · Render State",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
@@ -982,7 +1024,7 @@
                 },
                 "conditions": [
                   {
-                    "id": "a065",
+                    "id": "a070",
                     "leftValue": "={{ $json.status }}",
                     "rightValue": "done",
                     "operator": {
@@ -1005,7 +1047,7 @@
                 },
                 "conditions": [
                   {
-                    "id": "a066",
+                    "id": "a071",
                     "leftValue": "={{ $json.status }}",
                     "rightValue": "failed",
                     "operator": {
@@ -1026,7 +1068,7 @@
       }
     },
     {
-      "id": "a068",
+      "id": "a073",
       "name": "Render Failed",
       "type": "n8n-nodes-base.stopAndError",
       "typeVersion": 1,
@@ -1039,7 +1081,7 @@
       }
     },
     {
-      "id": "a069",
+      "id": "a074",
       "name": "Worker · Download Video",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -1063,7 +1105,7 @@
       "maxTries": 2
     },
     {
-      "id": "a070",
+      "id": "a075",
       "name": "YouTube · Upload Video",
       "type": "n8n-nodes-base.youTube",
       "typeVersion": 1,
@@ -1087,7 +1129,7 @@
       "onError": "continueErrorOutput"
     },
     {
-      "id": "a071",
+      "id": "a076",
       "name": "Worker · Download Thumbnail",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -1110,7 +1152,7 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "a072",
+      "id": "a077",
       "name": "YouTube · Set Thumbnail",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -1133,7 +1175,7 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "a073",
+      "id": "a078",
       "name": "Worker · Cleanup Job",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -1151,7 +1193,7 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "a074",
+      "id": "a079",
       "name": "Final Log",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1160,11 +1202,11 @@
         180
       ],
       "parameters": {
-        "jsCode": "// Rebuilt from scratch in a Code node rather than a Set node: several\n// upstream nodes run with onError 'continueRegularOutput', and that flag rides\n// along on the item, diverting later nodes that have an error output.\nconst research = $('Research Ready').first().json;\nconst script = $('Script Approved').first().json;\nconst ranked = $('Rank & Balance Domains').first().json;\nconst prep = $('Prepare Research Payload').first().json;\nconst footage = $('Collect Footage URLs').first().json;\nconst upload = $('YouTube · Upload Video').first().json;\n\n// The YouTube node publishes the new video id as 'uploadId', not 'id'.\nconst videoId = upload.uploadId || upload.id;\n\nreturn [{\n  json: {\n    video_url: videoId ? 'https://youtube.com/watch?v=' + videoId : null,\n    video_id: videoId ?? null,\n    privacy_status: $('Config').first().json.PRIVACY_STATUS,\n    title: script.seo.title,\n    topic: research.recommended_topic,\n    unique_angle: research.unique_angle,\n    intersection_gap: research.intersection_gap,\n    why_this_topic_wins: research.why_this_topic_wins,\n    ai_channels_researched: 3,\n    radiology_channels_researched: 2,\n    videos_analyzed: ranked.videos_analyzed,\n    transcripts_used: prep.transcripts_used,\n    transcripts_available: prep.transcripts_available,\n    footage_clips_used: footage.footage_count,\n    script_word_count: script.word_count ?? footage.word_count,\n    script_word_target: script.word_target ?? null,\n\n    // Editorial gate outcome. 'flagged' means blocking violations survived the\n    // revision round and the video was uploaded private with a warning\n    // prepended to its description -- read editorial_violations before\n    // publishing anything.\n    editorial_verdict: script.editorial_verdict ?? null,\n    editorial_blocking_count: script.editorial_blocking_count ?? null,\n    editorial_violations: script.editorial_violations ?? [],\n    judge_summary: script.judge_summary ?? null,\n    judge_error: script.judge_error ?? null,\n    revision_rounds: script.revision_rounds ?? 0,\n\n    timestamp: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "// Rebuilt from scratch in a Code node rather than a Set node: several\n// upstream nodes run with onError 'continueRegularOutput', and that flag rides\n// along on the item, diverting later nodes that have an error output.\nconst research = $('Research Ready').first().json;\nconst script = $('Script Approved').first().json;\nconst ranked = $('Rank & Balance Domains').first().json;\nconst prep = $('Prepare Research Payload').first().json;\nconst footage = $('Collect Footage URLs').first().json;\nconst upload = $('YouTube · Upload Video').first().json;\n\n// The YouTube node publishes the new video id as 'uploadId', not 'id'.\nconst videoId = upload.uploadId || upload.id;\n\nreturn [{\n  json: {\n    video_url: videoId ? 'https://youtube.com/watch?v=' + videoId : null,\n    video_id: videoId ?? null,\n    privacy_status: $('Config').first().json.PRIVACY_STATUS,\n    title: script.seo.title,\n    topic: research.recommended_topic,\n    // The sourced fact the whole video is built on, with its outlet and URL.\n    // This is the first thing to check when reviewing a run: if it is null, the\n    // research step found nothing citable and the script is unanchored.\n    anchor_fact: research.anchor_fact ?? null,\n    unique_angle: research.unique_angle,\n    intersection_gap: research.intersection_gap,\n    why_this_topic_wins: research.why_this_topic_wins,\n    ai_channels_researched: 3,\n    radiology_channels_researched: 2,\n    videos_analyzed: ranked.videos_analyzed,\n    transcripts_used: prep.transcripts_used,\n    transcripts_available: prep.transcripts_available,\n    footage_clips_used: footage.footage_count,\n    script_word_count: script.word_count ?? footage.word_count,\n    script_word_target: script.word_target ?? null,\n\n    // Editorial gate outcome. 'flagged' means blocking violations survived the\n    // revision round and the video was uploaded private with a warning\n    // prepended to its description -- read editorial_violations before\n    // publishing anything.\n    editorial_verdict: script.editorial_verdict ?? null,\n    editorial_blocking_count: script.editorial_blocking_count ?? null,\n    editorial_violations: script.editorial_violations ?? [],\n    judge_summary: script.judge_summary ?? null,\n    judge_error: script.judge_error ?? null,\n    revision_rounds: script.revision_rounds ?? 0,\n\n    // Sourcing, recorded so a run is auditable after the fact. A \"Did you know?\"\n    // video with citable_facts_available > 0 and figures_sourced empty asserted\n    // nothing checkable -- not a failure, but worth noticing.\n    citable_facts_available: script.citable_facts_available ?? 0,\n    figures_sourced: script.figures_sourced ?? [],\n    sourced_claims: script.sourced_claims ?? [],\n\n    timestamp: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "a075",
+      "id": "a080",
       "name": "Upload Failed · Keep Artifacts",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1234,6 +1276,17 @@
       ]
     },
     "Config": {
+      "main": [
+        [
+          {
+            "node": "Postgres · Content Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres · Content Memory": {
       "main": [
         [
           {

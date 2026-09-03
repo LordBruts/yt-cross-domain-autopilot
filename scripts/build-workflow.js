@@ -116,7 +116,19 @@ const cfgFields = [
       'and AI practitioners interested in healthcare applications',
     'string',
   ],
-  ['VIDEO_LENGTH_MINUTES', 8, 'number'],
+  // 4 minutes at 130 wpm = ~520 words. Was 8, which produced a 10.9-minute
+  // voiceover and dominated the run: render and upload together were 29 of the
+  // 36 minutes an execution took.
+  ['VIDEO_LENGTH_MINUTES', 4, 'number'],
+  // Body sections scale with length. Was hardcoded at 5 in two places.
+  ['BODY_SECTIONS', 4, 'number'],
+  // One shot every SHOT_SECONDS. The worker used to divide the whole voiceover
+  // by the clip count, which gave 65-second slots and looped each clip 3-6
+  // times inside its own slot -- the repetition problem. FOOTAGE_KEYWORDS x
+  // FOOTAGE_PER_KEYWORD is the size of the clip pool it draws from.
+  ['SHOT_SECONDS', 4, 'number'],
+  ['FOOTAGE_KEYWORDS', 12, 'number'],
+  ['FOOTAGE_PER_KEYWORD', 4, 'number'],
   ['MEDIA_WORKER_URL', 'http://host.docker.internal:8099', 'string'],
   // WRITER_MODEL and JUDGE_MODEL must stay on DIFFERENT vendors. This is the
   // gate's central property, not a preference: a judge sharing the writer's
@@ -149,6 +161,70 @@ node('Config', 'n8n-nodes-base.set', 3.5, [-240, 300], {
 // ---------------------------------------------------------------------------
 // 3. Build channel list -> 5 items  (spec node 2, the "loop")
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Grounding: the sibling ai-radiography-content-engine archive.
+//
+// This is the pipeline's ONLY citable source. Competitor YouTube transcripts
+// are not evidence and never become evidence -- Editorial Checks keeps the two
+// corpora in separate variables for exactly that reason.
+//
+// Query shape matters in three ways, each of them a trap this repo has already
+// hit:
+//   * It returns EXACTLY ONE ROW, always. A Postgres node that returns zero
+//     rows stops the branch dead, so an empty archive would read as silence
+//     rather than as "nothing found". The two json_agg subqueries with
+//     COALESCE guarantee the row exists even when both are empty.
+//   * It is BALANCED by category (8 AI + 8 radiography). Ranking the whole
+//     pool by value_score returns 30 AI to 10 radiography, because the AI
+//     feeds are denser -- and a cross-domain channel cannot be written from a
+//     one-sided pile.
+//   * It caps each source at 3 rows. Without that, OpenAI (115 rows) and
+//     Radiology Business (308) crowd everything else out and the video ends up
+//     sourced from two outlets.
+//
+// `key_findings NOT ILIKE '%no concrete findings%'` uses the archive's own
+// honesty about empty articles to select only rows worth citing. Measured on
+// the live database: 16 facts, 6 insights, 6 distinct sources, ~5k tokens.
+const MEMORY_SQL = `WITH pool AS (
+  SELECT a.title, a.source, a.url, a.category, a.value_score,
+         a.published_at::date          AS published,
+         left(s.key_findings, 700)     AS key_findings,
+         left(s.takeaway, 300)         AS takeaway,
+         row_number() OVER (PARTITION BY a.category, a.source
+                            ORDER BY a.value_score DESC NULLS LAST,
+                                     a.published_at DESC) AS rn_src
+  FROM summaries s JOIN articles a ON a.id = s.article_id
+  WHERE s.status = 'ok' AND a.reject_reason = ''
+    AND s.key_findings NOT ILIKE '%no concrete findings%'
+    AND length(s.key_findings) > 120
+    AND a.published_at > now() - interval '60 days'
+), capped AS (
+  SELECT *, row_number() OVER (PARTITION BY category
+                               ORDER BY value_score DESC NULLS LAST,
+                                        published DESC) AS rn
+  FROM pool WHERE rn_src <= 3
+)
+SELECT
+  (SELECT COALESCE(json_agg(x ORDER BY x.category, x.rn), '[]'::json)
+   FROM (SELECT title, source, url, category, published, key_findings, takeaway, rn
+         FROM capped WHERE rn <= 8) x) AS facts,
+  (SELECT COALESCE(json_agg(y), '[]'::json)
+   FROM (SELECT r.finished_at::date AS day, left(r.insight, 900) AS insight
+         FROM runs r WHERE r.insufficient = false
+         ORDER BY r.finished_at DESC LIMIT 6) y) AS insights;`;
+
+node(
+  'Postgres · Content Memory',
+  'n8n-nodes-base.postgres',
+  2.6,
+  [-240, 300],
+  { operation: 'executeQuery', query: MEMORY_SQL, options: {} },
+  // The archive is grounding, not a hard dependency. If Postgres is down the
+  // run should still produce a video -- one that simply cannot cite anything,
+  // which the gate already handles by blocking every unattributed figure.
+  { onError: 'continueRegularOutput', retryOnFail: true, maxTries: 2 }
+);
+
 node('Build Channel List', 'n8n-nodes-base.code', 2, [-20, 300], {
   jsCode: `// Emits one item per research channel, carrying its domain label.
 // The domain travels with every video from here to the research prompt.
@@ -426,11 +502,25 @@ for (const [videoId, rec] of Object.entries(transcripts)) {
   bucket[videoId] = { transcript: rec.transcript, domain: rec.domain };
 }
 
+// The archive is the ONLY citable source. It is handed over under a key that
+// says so, and the competitor material under keys that say the opposite, so the
+// distinction survives into the model's context rather than living only in the
+// prompt. Missing entirely if Postgres was down (the node continues on error).
+const mem = $('Postgres · Content Memory').first().json || {};
+const citable_facts = Array.isArray(mem.facts) ? mem.facts : [];
+const past_insights = Array.isArray(mem.insights) ? mem.insights : [];
+
 const payload = {
-  ai_channel_data: ranked.ai_channel_data,
-  radiology_channel_data: ranked.radiology_channel_data,
-  ai_transcripts,
-  radiology_transcripts,
+  citable_facts,
+  past_insights,
+  competitor_channel_data_NOT_CITABLE: {
+    ai: ranked.ai_channel_data,
+    radiology: ranked.radiology_channel_data,
+  },
+  competitor_transcripts_NOT_CITABLE: {
+    ai: ai_transcripts,
+    radiology: radiology_transcripts,
+  },
   niche_context: cfg.NICHE_CONTEXT,
   target_audience: cfg.TARGET_AUDIENCE,
 };
@@ -441,6 +531,7 @@ return [{
     system_prompt: $('Worker · Research Prompt').first().json.data,
     transcripts_used: Object.keys(transcripts).length,
     transcripts_available: tRes.available_count || 0,
+    citable_facts_count: citable_facts.length,
   },
   pairedItem: { item: 0 },
 }];`,
@@ -568,43 +659,74 @@ node('Prepare Script Payload', 'n8n-nodes-base.code', 2, [3060, 300], {
   jsCode: `const cfg = $('Config').first().json;
 const research = $('Research Ready').first().json;
 
+const mem = $('Postgres · Content Memory').first().json || {};
+const citable_facts = Array.isArray(mem.facts) ? mem.facts : [];
+
+const words = Math.round(cfg.VIDEO_LENGTH_MINUTES * 130);
+const sections = cfg.BODY_SECTIONS || 4;
+const perSection = Math.round((words - 140) / sections);
+
 const instruction = [
-  'Write a unique faceless video script on the recommended_topic. The script must:',
-  "- Open with a hook that speaks directly to a radiographer or healthcare worker's real daily frustration or curiosity",
-  '- Use the AI winning hook style as structural inspiration only — never copy competitor content',
-  '- Explain the AI or automation concept in plain terms a healthcare professional would understand',
-  '- Show a concrete, specific radiology use case — not vague or hypothetical',
-  '- Sound like it comes from someone who has actually worked in both radiology AND AI — use that insider credibility',
-  '- End with a CTA that invites radiographers or AI practitioners to share their own experience',
+  'Write a "DID YOU KNOW?" educational video on the recommended_topic.',
   '',
-  'LENGTH IS A HARD REQUIREMENT, not a suggestion. Target ' + cfg.VIDEO_LENGTH_MINUTES +
-    ' minutes at 130 words per minute = ' + Math.round(cfg.VIDEO_LENGTH_MINUTES * 130) +
-    ' words TOTAL. Budget it as:',
-  '  - hook: 60-90 words',
-  '  - EACH of the 5 body sections: ' + Math.round((cfg.VIDEO_LENGTH_MINUTES * 130 - 150) / 5) +
-    ' words minimum (this is per section, not for all five combined)',
-  '  - cta: 60-90 words',
-  'A script materially shorter than ' + Math.round(cfg.VIDEO_LENGTH_MINUTES * 130) +
-    ' words will be rejected and regenerated. Write each section out in full with concrete detail:' +
-  ' the actual tools, the actual n8n nodes, the actual sequence of steps. Do not outline,' +
-  ' summarise, or write section abstracts — write the actual spoken words.',
+  'FORMAT. This is not a tutorial and not a talking-head opinion. It is a short',
+  'educational piece built around ONE genuinely surprising, SOURCED fact, and what',
+  'that fact means for someone who operates imaging equipment for a living.',
+  '',
+  '  hook       - state the surprising fact in the first sentence, plainly, and',
+  '               name its source out loud. No throat-clearing, no "in this video",',
+  '               no greeting. The first seven words decide whether anyone stays.',
+  '  section 1  - the fact in full: what was actually reported, by whom, and when.',
+  '  section 2  - why it matters to a radiographer specifically, in their shift.',
+  '  section 3  - where AI or automation touches it - the concrete mechanism, the',
+  '               actual tool or n8n node, the actual sequence of steps.',
+  '  section 4  - what a viewer can do about it now.',
+  '  cta        - invite BOTH radiographers and AI practitioners to answer a',
+  '               specific question, not "let me know what you think".',
+  '',
+  'SOURCING. citable_facts is the ONLY source you have. Every figure, outcome,',
+  'clearance, product name or study result you state MUST come from it, and you',
+  'MUST name the source in the spoken line ("Radiology Business reported...").',
+  'List each one in sourced_claims with the exact source_url from the payload.',
+  'The competitor channel data is NOT a source. It shows you how videos are paced,',
+  'nothing more. A number you saw in a competitor transcript is that creator\\'s',
+  'unverified marketing claim and repeating it is worse than inventing one,',
+  'because it looks sourced.',
+  '',
+  'LENGTH. Target ' + cfg.VIDEO_LENGTH_MINUTES + ' minutes at 130 words per minute = ' +
+    words + ' words TOTAL, in EXACTLY ' + sections + ' body sections.',
+  '  - hook: 40-60 words',
+  '  - EACH of the ' + sections + ' body sections: about ' + perSection +
+    ' words (per section, not for all of them combined)',
+  '  - cta: 40-60 words',
+  'Write the actual spoken words. Do not outline, summarise, or write section',
+  'abstracts. Going long is as wrong as going short: this is a ' +
+    cfg.VIDEO_LENGTH_MINUTES + '-minute video, not a lecture.',
   '',
   // The previous version of this line asked for "worked examples, specific tools
   // and real numbers". "Real numbers" is what produced "a 30% decrease at our
-  // facility" on the first live run: the model has no numbers, so it invented
-  // them. Length must be reached by explaining more deeply, never by inventing.
-  'REACH THE LENGTH BY GOING DEEPER, NOT BY INVENTING. Add more build detail, more',
-  'of the actual how, more explicit hypotheticals. Never add a statistic, a result,',
-  'a study or a deployment story to fill space — every one of those is an automatic',
-  'rejection under the truthfulness rules above, and padding with them will cost you',
-  'the whole draft.',
+  // facility" on the first live run: the model had no numbers, so it invented
+  // them. Now there ARE numbers -- but only the ones in citable_facts.
+  'REACH THE LENGTH WITH SOURCED DETAIL AND BUILD DETAIL, NEVER BY INVENTING.',
+  'If you need another beat, take another fact from citable_facts or describe one',
+  'more real step of the build. Never pad with an unsourced statistic, a study, or',
+  'a story about having deployed something.',
+  '',
+  'FOOTAGE. pexels_search_keywords must contain exactly ' + (cfg.FOOTAGE_KEYWORDS || 12) +
+    ' DISTINCT, visually literal search terms. They become the b-roll, one shot every ' +
+    (cfg.SHOT_SECONDS || 4) + ' seconds, so near-duplicates ("hospital", "hospital corridor")',
+  'produce a video that looks like it repeats. Vary the subject: equipment, people,',
+  'screens, environments, abstract technology.',
 ].join('\\n');
 
 const payload = {
   research,
+  citable_facts,
+  competitor_material_NOT_CITABLE: 'see research.pacing_patterns - format only, never a source',
   niche_context: cfg.NICHE_CONTEXT,
   target_audience: cfg.TARGET_AUDIENCE,
   video_length_minutes: cfg.VIDEO_LENGTH_MINUTES,
+  body_sections: sections,
   instruction,
 };
 
@@ -757,8 +879,52 @@ const target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);
 // So every percentage and every measured outcome is blocked outright. This is
 // narrow: it does not touch ordinary numbers like "4 hours", "5 steps" or
 // "400 integrations", only claim-shaped figures the host cannot stand behind.
+// TWO corpora, and they must never be merged. This is the whole safety
+// property of the sourced-claim exemption below.
+//
+//   citable  - the content-engine archive. Real articles, real outlets, real
+//              URLs. A figure here is checkable.
+//   corpus   - competitor YouTube transcripts. NOT evidence, and never becomes
+//              evidence. Kept only so the judge can spot copied content.
+//
+// Collapsing them is not hypothetical: an earlier traceability check keyed off
+// the research payload and let "up to 50%" through, because 50% genuinely
+// appears in a competitor's transcript. A dedicated regression case guards this.
 let corpus = '';
 try { corpus = String($('Prepare Research Payload').first().json.payload_json || ''); } catch (e) { corpus = ''; }
+
+let citableFacts = [];
+try {
+  const mem = $('Postgres · Content Memory').first().json || {};
+  citableFacts = Array.isArray(mem.facts) ? mem.facts : [];
+} catch (e) { citableFacts = []; }
+
+const citableText = citableFacts
+  .map((f) => String(f.key_findings || '') + ' ' + String(f.takeaway || ''))
+  .join(' ');
+const citableUrls = new Set(citableFacts.map((f) => String(f.url || '').trim()).filter(Boolean));
+const citableSources = citableFacts.map((f) => String(f.source || '').trim()).filter(Boolean);
+
+// A figure is permitted only when the script BACKS it: declared in
+// sourced_claims, pointing at a URL that is actually in the archive, with the
+// figure present in that archive text, and the outlet named in the spoken line.
+// Declaring a source is not enough -- the attribution has to be audible, or the
+// viewer has no way to tell a sourced claim from an invented one.
+const declared = Array.isArray(s.sourced_claims) ? s.sourced_claims : [];
+function isBacked(figure, whereText) {
+  const fig = String(figure).replace(/\\s+/g, '');
+  for (const d of declared) {
+    const url = String((d && d.url) || (d && d.source_url) || '').trim();
+    const name = String((d && d.source_name) || '').trim();
+    const claim = String((d && d.claim) || '').replace(/\\s+/g, '');
+    if (!citableUrls.has(url)) continue;                 // not from the archive
+    if (!claim.includes(fig)) continue;                  // declares a different figure
+    if (!citableText.replace(/\\s+/g, '').includes(fig)) continue; // not actually in the archive
+    if (!name || !whereText.toLowerCase().includes(name.toLowerCase())) continue; // not said aloud
+    return name;
+  }
+  return null;
+}
 
 const violations = [];
 const add = (rule, severity, quote, why) => violations.push({
@@ -778,6 +944,24 @@ const RULES = [
   { rule: 'unsourced-study-claim', severity: 'blocking',
     re: /\\b(?:a\\s+study|studies\\s+(?:show|found)|research\\s+(?:shows|found)|according\\s+to\\s+[^.]{0,40}(?:study|paper|trial|report))\\b/gi,
     why: 'Cites research that is not in the supplied payload.' },
+  // "I built X in n8n" is the single most common title on the AI channels this
+  // pipeline researches, and the research step used to hand those formulas to
+  // the writer as the pattern to copy. The formulas are gone from the research
+  // output now; this catches any that survive by imitation. Nothing here was
+  // built by the host, and a faceless channel claiming authorship of a system
+  // it never ran is the same fabrication as inventing a statistic.
+  { rule: 'first-person-build', severity: 'blocking',
+    re: /\\b(?:I|we)\\s+(?:just\\s+|recently\\s+)?(?:built|made|created|developed|designed|coded|wrote|set\\s+up|wired\\s+up|put\\s+together|automated|shipped|launched)\\b/gi,
+    why: 'Claims to have built or made something. Describe how it IS built, not that you built it.' },
+  // A "Did you know?" video that opens like every other AI video has already
+  // failed correction 8. Blocking, not advisory: these are trivially avoidable
+  // and their presence is proof the model reached for the generic shape.
+  { rule: 'generic-filler', severity: 'blocking',
+    re: /\\b(?:in\\s+today'?s\\s+video|let'?s\\s+dive\\s+(?:in|into)|buckle\\s+up|without\\s+further\\s+ado|in\\s+this\\s+video,?\\s+(?:I|we)|welcome\\s+back)\\b/gi,
+    why: 'Generic video filler. Open on the fact itself.' },
+  { rule: 'hype-cliche', severity: 'advisory',
+    re: /\\b(?:game[- ]?changer|revolutioni[sz]e|the\\s+future\\s+is\\s+bright|unlock\\s+the\\s+power|take\\s+it\\s+to\\s+the\\s+next\\s+level|cutting[- ]edge|paradigm\\s+shift)\\b/gi,
+    why: 'Marketing cliche. Say the specific thing instead.' },
   // Advisory on purpose: radiologists are a legitimate topic, so a blocking
   // regex here would fire on correct usage. The judge decides.
   { rule: 'profession-confusion', severity: 'advisory',
@@ -788,20 +972,53 @@ const RULES = [
     why: 'Absolute claim that cannot be supported.' },
 ];
 
+// Only figure-shaped rules can be excused by sourcing. A first-person build
+// claim or a piece of generic filler is wrong no matter who reported it.
+const SOURCEABLE = new Set(['fabricated-statistic', 'measured-outcome-claim']);
+const sourced = [];
+
 for (const r of RULES) {
   for (const pair of parts) {
     const where = pair[0];
-    const hits = String(pair[1] || '').match(r.re);
+    const text = String(pair[1] || '');
+    const hits = text.match(r.re);
     if (!hits) continue;
     for (const h of hits) {
+      if (SOURCEABLE.has(r.rule)) {
+        const backedBy = isBacked(h, text);
+        if (backedBy) {
+          sourced.push({ figure: h, where, source: backedBy });
+          continue;
+        }
+      }
       add(r.rule, r.severity, where + ': ' + h, r.why);
     }
   }
 }
 
+// The SEO title was previously checked only for length and topic, so
+// "I Built an AI Radiology Report Writer in n8n (No Code)" -- an actual
+// generated title -- passed the gate untouched while the same words in the body
+// would have been blocked.
+const titleText = (s.seo && s.seo.title) || '';
+for (const r of RULES) {
+  if (r.rule !== 'first-person-build' && r.rule !== 'hype-cliche') continue;
+  const hits = titleText.match(r.re);
+  if (hits) for (const h of hits) add(r.rule, 'blocking', 'seo.title: ' + h, r.why);
+}
+
 // Mechanical rulings live here too, so ONE component owns quality.
-if (body.length !== 5) add('structure', 'blocking', body.length + ' body sections', 'Exactly 5 required.');
+const wantSections = cfg.BODY_SECTIONS || 4;
+if (body.length !== wantSections) {
+  add('structure', 'blocking', body.length + ' body sections', 'Exactly ' + wantSections + ' required.');
+}
 if (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');
+// Overshoot is now a real failure, not a bonus. A 1606-word draft against a
+// 1040 target produced a 10.9-minute video for an 8-minute slot, and the whole
+// point of the 4-minute format is that it stays 4 minutes.
+if (words > target * 1.35) {
+  add('too-long', 'blocking', words + ' words vs target ' + target, 'Over 135% of target length.');
+}
 
 const title = (s.seo && s.seo.title) || '';
 if (!title) add('seo-title-missing', 'blocking', '(empty)', 'No SEO title.');
@@ -815,20 +1032,45 @@ if (!/radiograph/i.test(cta) || !/(\\bAI\\b|practitioner|engineer|developer|auto
   add('weak-cta', 'advisory', cta.slice(0, 160), 'CTA must invite BOTH radiographers and AI practitioners.');
 }
 
+// Keyword count drives clip variety: fewer keywords means fewer unique clips
+// means visible repetition, which is a real defect in the finished video rather
+// than a style note. Near-duplicates defeat the purpose just as badly as a
+// short list, so both are checked.
+const wantKw = cfg.FOOTAGE_KEYWORDS || 12;
 const kws = Array.isArray(s.pexels_search_keywords) ? s.pexels_search_keywords : [];
-if (kws.length !== 5) add('keywords', 'advisory', kws.length + ' keywords', 'Exactly 5 expected.');
+if (kws.length < wantKw) {
+  add('keywords', 'blocking', kws.length + ' keywords', wantKw + ' distinct keywords required for clip variety.');
+}
+const kwNorm = new Set(kws.map((k) => String(k || '').toLowerCase().trim()));
+if (kwNorm.size < kws.length) {
+  add('keywords-duplicate', 'blocking', kws.length - kwNorm.size + ' duplicate(s)', 'Keywords must be distinct.');
+}
+
+// A "Did you know?" video with nothing sourced is just an opinion piece.
+if (citableFacts.length > 0 && sourced.length === 0 && declared.length === 0) {
+  add('unsourced-video', 'advisory', 'no sourced_claims',
+      'The archive supplied ' + citableFacts.length + ' facts and the script cites none.');
+}
 
 const blocking = violations.filter((v) => v.severity === 'blocking');
 
 const judge = {
   script: s.script,
   seo: s.seo,
-  research_payload: corpus.slice(0, 24000),
+  sourced_claims: declared,
+  // The judge gets both corpora, LABELLED, because it has to tell a properly
+  // attributed fact from a laundered competitor claim -- and it cannot do that
+  // if the two arrive as one undifferentiated blob.
+  citable_archive: citableFacts,
+  competitor_transcripts_NOT_CITABLE: corpus.slice(0, 16000),
   deterministic_findings: violations,
+  figures_accepted_as_sourced: sourced,
 };
 
 console.log('editorial checks: ' + words + '/' + target + ' words, ' +
-  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory');
+  blocking.length + ' blocking, ' + (violations.length - blocking.length) + ' advisory, ' +
+  sourced.length + ' figure(s) accepted as sourced of ' + citableFacts.length + ' archive facts');
+for (const g of sourced) console.log('  SOURCED ' + g.figure + ' (' + g.source + ') @' + g.where);
 for (const v of blocking) console.log('  BLOCKING ' + v.rule + ' -> ' + v.quote);
 
 return [{
@@ -836,8 +1078,11 @@ return [{
     script: s.script,
     seo: s.seo,
     pexels_search_keywords: kws,
+    sourced_claims: declared,
     deterministic_violations: violations,
     deterministic_blocking: blocking.length,
+    figures_sourced: sourced,
+    citable_facts_available: citableFacts.length,
     word_count: words,
     word_target: target,
     judge_payload_json: JSON.stringify(judge),
@@ -895,6 +1140,9 @@ return [{
     editorial_verdict: verdict,
     editorial_violations: all,
     editorial_blocking_count: blocking.length,
+    figures_sourced: checks.figures_sourced || [],
+    citable_facts_available: checks.citable_facts_available || 0,
+    sourced_claims: checks.sourced_claims || [],
     judge_summary: (judge && judge.summary) || null,
     judge_error,
     needs_revision,
@@ -1048,6 +1296,9 @@ return [{
     word_target: g.word_target,
     editorial_verdict: g.editorial_verdict,
     editorial_violations: g.editorial_violations || [],
+    figures_sourced: g.figures_sourced || [],
+    citable_facts_available: g.citable_facts_available || 0,
+    sourced_claims: g.sourced_claims || [],
     editorial_blocking_count: blocking.length,
     judge_summary: g.judge_summary || null,
     judge_error: g.judge_error || null,
@@ -1061,18 +1312,39 @@ return [{
 // 23-25. Pexels footage  (spec node 7)
 // ---------------------------------------------------------------------------
 node('Split Keywords', 'n8n-nodes-base.code', 2, [6140, 300], {
-  jsCode: `const s = $('Script Approved').first().json;
-const kws = (s.pexels_search_keywords || [])
-  .map((k) => String(k || '').trim())
-  .filter(Boolean)
-  .slice(0, 5);
+  jsCode: `const cfg = $('Config').first().json;
+const s = $('Script Approved').first().json;
 
-// A model that returned no keywords should not sink a finished script.
-if (kws.length === 0) {
-  kws.push('hospital technology', 'medical scan', 'computer screen code');
+// De-duplicated case-insensitively: two keywords that differ only by case fetch
+// the same clips from Pexels and reintroduce the repetition this is meant to fix.
+const seen = new Set();
+const kws = [];
+for (const raw of s.pexels_search_keywords || []) {
+  const k = String(raw || '').trim();
+  if (!k) continue;
+  const key = k.toLowerCase();
+  if (seen.has(key)) continue;
+  seen.add(key);
+  kws.push(k);
 }
 
-return kws.map((keyword) => ({ json: { keyword }, pairedItem: { item: 0 } }));`,
+// A model that returned too few keywords should not sink a finished script, but
+// it must not silently produce a repetitive video either. Top up from a spread
+// of visually distinct fallbacks -- deliberately different subjects, not
+// variations on one.
+const FALLBACK = [
+  'hospital corridor', 'mri scanner', 'ct scan machine', 'radiographer at work',
+  'medical monitor display', 'code on screen', 'server room', 'doctor reviewing scan',
+  'x-ray image', 'hospital reception', 'laptop typing closeup', 'data visualization',
+];
+for (const f of FALLBACK) {
+  if (kws.length >= (cfg.FOOTAGE_KEYWORDS || 12)) break;
+  if (!seen.has(f.toLowerCase())) { seen.add(f.toLowerCase()); kws.push(f); }
+}
+
+const final = kws.slice(0, cfg.FOOTAGE_KEYWORDS || 12);
+console.log('footage keywords: ' + final.length + ' -> ' + final.join(', '));
+return final.map((keyword) => ({ json: { keyword }, pairedItem: { item: 0 } }));`,
 });
 
 node(
@@ -1088,7 +1360,7 @@ node(
     queryParameters: {
       parameters: [
         { name: 'query', value: '={{ $json.keyword }}' },
-        { name: 'per_page', value: '2' },
+        { name: 'per_page', value: "={{ $('Config').first().json.FOOTAGE_PER_KEYWORD }}" },
         { name: 'orientation', value: 'landscape' },
         { name: 'min_duration', value: '8' },
       ],
@@ -1159,7 +1431,7 @@ node(
     sendBody: true,
     specifyBody: 'json',
     jsonBody:
-      '={{ JSON.stringify({ script_text: $json.full_script, footage_urls: $json.footage_urls, title: $json.title }) }}',
+      "={{ JSON.stringify({ script_text: $json.full_script, footage_urls: $json.footage_urls, title: $json.title, shot_seconds: $('Config').first().json.SHOT_SECONDS, subtitles: true }) }}",
     options: { timeout: 60000 },
   },
   { retryOnFail: true, maxTries: 2 }
@@ -1339,6 +1611,10 @@ return [{
     privacy_status: $('Config').first().json.PRIVACY_STATUS,
     title: script.seo.title,
     topic: research.recommended_topic,
+    // The sourced fact the whole video is built on, with its outlet and URL.
+    // This is the first thing to check when reviewing a run: if it is null, the
+    // research step found nothing citable and the script is unanchored.
+    anchor_fact: research.anchor_fact ?? null,
     unique_angle: research.unique_angle,
     intersection_gap: research.intersection_gap,
     why_this_topic_wins: research.why_this_topic_wins,
@@ -1361,6 +1637,13 @@ return [{
     judge_summary: script.judge_summary ?? null,
     judge_error: script.judge_error ?? null,
     revision_rounds: script.revision_rounds ?? 0,
+
+    // Sourcing, recorded so a run is auditable after the fact. A "Did you know?"
+    // video with citable_facts_available > 0 and figures_sourced empty asserted
+    // nothing checkable -- not a failure, but worth noticing.
+    citable_facts_available: script.citable_facts_available ?? 0,
+    figures_sourced: script.figures_sourced ?? [],
+    sourced_claims: script.sourced_claims ?? [],
 
     timestamp: new Date().toISOString(),
   },
@@ -1396,7 +1679,11 @@ return [{
 // Wiring
 // ---------------------------------------------------------------------------
 connect('Schedule · Every 3 Days 09:00', 'Config');
-connect('Config', 'Build Channel List');
+// Config -> memory -> channels. Safe in the data path because Build Channel
+// List reads $('Config').first(), not $input -- which matters, since a Postgres
+// node also replaces the item with its result.
+connect('Config', 'Postgres · Content Memory');
+connect('Postgres · Content Memory', 'Build Channel List');
 connect('Build Channel List', 'YT · Search Channel');
 connect('YT · Search Channel', 'Flatten & Tag Domain');
 connect('Flatten & Tag Domain', 'YT · Batch Statistics');
@@ -1506,10 +1793,15 @@ if (withCreds.length) {
 // means it sits in the chain only to fetch something and the item flowing
 // through it still belongs to an earlier node. A Code node reading $input right
 // after one of those is reading the wrong thing by construction.
+// A Postgres node replaces the item with its query result, exactly as an HTTP
+// Request node replaces it with the response body, so it belongs in the same
+// check. Postgres · Content Memory sits in the data path between Config and
+// Build Channel List and would break it the same way.
+const REPLACES_ITEM = ['n8n-nodes-base.httpRequest', 'n8n-nodes-base.postgres'];
 const byName = Object.fromEntries(nodes.map((n) => [n.name, n]));
 const blindReads = [];
 for (const [from, conn] of Object.entries(connections)) {
-  if (!byName[from] || byName[from].type !== 'n8n-nodes-base.httpRequest') continue;
+  if (!byName[from] || !REPLACES_ITEM.includes(byName[from].type)) continue;
   // Is this fetch consumed by name somewhere? Then it is a pass-through.
   if (!serialized.includes("$('" + from + "')")) continue;
   for (const port of conn.main || []) {
@@ -1522,8 +1814,9 @@ for (const [from, conn] of Object.entries(connections)) {
 }
 if (blindReads.length) {
   console.error(
-    'REFUSING TO WRITE: Code node reads $input directly downstream of an HTTP Request ' +
-      'node, which replaces the item with its response body:\n  ' +
+    'REFUSING TO WRITE: Code node reads $input directly downstream of a fetch node ' +
+      'that REPLACES the item with its own result, so $input is that result and not ' +
+      'the pipeline data:\n  ' +
       blindReads.join('\n  ') +
       "\nRead from a named node instead, e.g. $('Script Ready').first().json"
   );
