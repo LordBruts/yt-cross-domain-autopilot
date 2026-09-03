@@ -201,11 +201,19 @@ node scripts/test-editorial-checks.js
 
 Extracts the check code from the **generated** `workflow.json` — so it tests what actually deploys,
 not a copy that can drift — and runs it against `fixtures/hallucinated-script.json`, the real script
-from execution 654 copied out of the execution payload rather than hand-written. Four cases:
-the hallucinated script must be caught on every known violation (6 blocking); a clean script must
-pass with **zero** blocking, because a gate that rejects everything is as useless as one that
+from execution 654 copied out of the execution payload rather than hand-written. Four behaviour
+cases: the hallucinated script must be caught on every known violation (6 blocking); a clean script
+must pass with **zero** blocking, because a gate that rejects everything is as useless as one that
 rejects nothing; a percentage must be blocked even when the corpus contains it; and ordinary numbers
 must survive.
+
+Plus a **wiring** group, which exists because the four above structurally could not catch the worst
+bug this gate has had. They mock the node's inputs, so they test the code in isolation and pass just
+as happily when the node is wired to the wrong upstream neighbour — which it was, on every run, for
+the gate's entire first round. The wiring cases assert against the connection graph instead: each
+round's checks must read a **named** node, must not read `$input`, and must feed its own verifier.
+`$input` in the mock now throws rather than returning the script, so a regression fails loudly
+instead of quietly agreeing with itself.
 
 ---
 
@@ -282,6 +290,31 @@ pipeline with the bugs fixed.
 8. **`Final Log` is a Code node, not a Set node.** Several upstream nodes run with
    `onError: continueRegularOutput`, and in n8n that flag rides along on the item and diverts later
    nodes that have an error output. Rebuilding the item in a Code node drops it.
+
+9. **`Editorial Checks` reads a named node, never `$input`.** It sits downstream of
+   `Worker · Verifier Prompt`, an HTTP Request node, and an HTTP Request node **replaces the item
+   with its response body**. Reading `$input` there got `{ data: "<the verifier prompt text>" }` and
+   no script at all.
+
+   This shipped, and it is the most instructive failure in the project because *nothing looked
+   wrong*. Round 1 of the gate reported 0 words, 0 body sections and an empty title on every single
+   run, raised three blocking violations, and forced a revision that was never needed. The judge was
+   blind too — its payload carried `script: undefined` — so it echoed those findings back, which is
+   why the violation list came out doubled. `Prepare Revision` then told the writer *"your script
+   was REJECTED"* while handing it `previous_script: undefined` and violations reading *"0 body
+   sections"*. **The writer rewrote from nothing, against nonsense feedback**, which is why
+   execution 656 came back with 6 body sections against a hard rule of 5, and 1606 words against a
+   1040 target. A longer script means a longer voiceover, a longer render and a bigger upload, so it
+   was also a large part of why runs took 36 minutes.
+
+   Every execution still finished, uploaded, and reported `success`. Only round 2 — fed by a Code
+   node — ever saw the real script.
+
+   Fixed by reading `$('Script Ready')` and `$('Revision Parsed')` explicitly. The generator now
+   **refuses to build** the shape: a Code node reading `$input` directly downstream of an HTTP
+   Request node whose response is collected elsewhere by name. That combination means the fetch is a
+   pass-through and the item still belongs to an earlier node. The check stays narrow deliberately —
+   a Code node parsing an ordinary API response *should* read `$input`, and ten of them here do.
 
 ---
 

@@ -703,12 +703,30 @@ return [{ json: s, pairedItem: { item: 0 } }];`,
 // every node runs exactly once and .first() is unambiguous.
 // ---------------------------------------------------------------------------
 
-const EDITORIAL_CHECKS_CODE = `// Deterministic editorial checks -- Layer 2.
+// The script is read from a NAMED node, never from $input. Round 1 sits
+// downstream of "Worker · Verifier Prompt", an HTTP Request node, and an HTTP
+// Request node REPLACES the item with its response body -- so $input there is
+// { data: "<the verifier prompt text>" } and carries no script at all.
+//
+// This shipped, and it was silent in the worst way. Round 1 saw 0 words, 0 body
+// sections and an empty title on EVERY run, raised three blocking violations,
+// and forced a revision that was never needed. The judge was equally blind (its
+// payload carried script: undefined) so it just echoed those findings back,
+// which is why the violation list came out doubled. Then the revision step told
+// the writer "your script was REJECTED" while handing it previous_script:
+// undefined and violations reading "0 body sections" -- so the writer rewrote
+// from nothing, against nonsense. Execution 656's revised draft came back with 6
+// body sections against a hard rule of 5, and 1606 words against a 1040 target.
+//
+// Everything downstream still looked healthy: the run completed, uploaded, and
+// reported success. The generator now refuses to build this shape at all -- see
+// the $input-after-HTTP guard below.
+const EDITORIAL_CHECKS_CODE = (sourceNode) => `// Deterministic editorial checks -- Layer 2.
 // Catches fabrication by FORM: the claim classes this pipeline has no source to
 // support. Validated against fixtures/hallucinated-script.json (the real script
 // from execution 654), which must produce at least 6 blocking hits.
 const cfg = $('Config').first().json;
-const s = $input.first().json;
+const s = $('${sourceNode}').first().json;
 
 const body = Array.isArray(s.script && s.script.body) ? s.script.body : [];
 const parts = [
@@ -884,12 +902,17 @@ return [{
   pairedItem: { item: 0 },
 }];`;
 
-function editorialCycle(suffix, y, allowRevision) {
+// sourceNode is the node holding the script to check -- NOT necessarily the node
+// wired into the checks. Round 1's upstream neighbour is an HTTP Request that
+// overwrites the item; round 2's is a Code node that does not.
+function editorialCycle(suffix, y, allowRevision, sourceNode) {
   const checksName = 'Editorial Checks' + suffix;
   const verifierName = 'Editorial Verifier' + suffix;
   const gateName = 'Editorial Gate' + suffix;
 
-  node(checksName, 'n8n-nodes-base.code', 2, [4380, y], { jsCode: EDITORIAL_CHECKS_CODE });
+  node(checksName, 'n8n-nodes-base.code', 2, [4380, y], {
+    jsCode: EDITORIAL_CHECKS_CODE(sourceNode),
+  });
 
   openRouterNode(
     verifierName,
@@ -921,8 +944,8 @@ node(
   { retryOnFail: true, maxTries: 2 }
 );
 
-const cycle1 = editorialCycle('', 300, true);
-const cycle2 = editorialCycle(' (Round 2)', 700, false);
+const cycle1 = editorialCycle('', 300, true, 'Script Ready');
+const cycle2 = editorialCycle(' (Round 2)', 700, false, 'Revision Parsed');
 
 node('Needs Revision?', 'n8n-nodes-base.if', 2.3, [5040, 300], {
   conditions: isTrue('={{ $json.needs_revision }}'),
@@ -1464,6 +1487,46 @@ if (badRefs) {
 const withCreds = nodes.filter((n) => n.credentials).map((n) => n.name);
 if (withCreds.length) {
   console.error('REFUSING TO WRITE: credentials blocks present on: ' + withCreds.join(', '));
+  process.exit(1);
+}
+
+// An HTTP Request node REPLACES the item with its response body. A Code node
+// immediately downstream that reads $input therefore gets the response, not the
+// data it was written against -- and reads undefined fields with no error, so
+// the run completes and reports success while the node has done nothing useful.
+// This shipped once: "Script Ready -> Worker · Verifier Prompt -> Editorial
+// Checks" left round 1 of the gate blind on every execution.
+//
+// The fix in that position is always the same: read from a NAMED node
+// ($('Script Ready').first().json), not from $input.
+// The check is narrow on purpose. Most Code nodes downstream of an HTTP Request
+// SHOULD read $input -- that is how an API response gets parsed, and flagging
+// those would be noise. The broken shape is specifically a *fetch-and-park*
+// node: one whose response is collected elsewhere via $('name').first(), which
+// means it sits in the chain only to fetch something and the item flowing
+// through it still belongs to an earlier node. A Code node reading $input right
+// after one of those is reading the wrong thing by construction.
+const byName = Object.fromEntries(nodes.map((n) => [n.name, n]));
+const blindReads = [];
+for (const [from, conn] of Object.entries(connections)) {
+  if (!byName[from] || byName[from].type !== 'n8n-nodes-base.httpRequest') continue;
+  // Is this fetch consumed by name somewhere? Then it is a pass-through.
+  if (!serialized.includes("$('" + from + "')")) continue;
+  for (const port of conn.main || []) {
+    for (const target of port) {
+      const t = byName[target.node];
+      if (!t || t.type !== 'n8n-nodes-base.code') continue;
+      if (/\$input\b/.test(t.parameters.jsCode || '')) blindReads.push(from + ' -> ' + t.name);
+    }
+  }
+}
+if (blindReads.length) {
+  console.error(
+    'REFUSING TO WRITE: Code node reads $input directly downstream of an HTTP Request ' +
+      'node, which replaces the item with its response body:\n  ' +
+      blindReads.join('\n  ') +
+      "\nRead from a named node instead, e.g. $('Script Ready').first().json"
+  );
   process.exit(1);
 }
 

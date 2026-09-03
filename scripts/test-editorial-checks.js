@@ -34,12 +34,31 @@ const CONFIG = Object.fromEntries(
     .parameters.assignments.assignments.map((a) => [a.name, a.value])
 );
 
-/** Runs the real node code with n8n's globals mocked. */
+/**
+ * Runs the real node code with n8n's globals mocked.
+ *
+ * $input deliberately THROWS. The checks node sits downstream of an HTTP Request
+ * node, which replaces the item with its response body, so $input there holds
+ * the verifier prompt text and no script at all. Reading it shipped once and was
+ * invisible: round 1 of the gate saw 0 words on every run and forced a needless
+ * revision, while the execution still reported success. A permissive mock would
+ * have agreed with that code and passed.
+ */
 function runChecks(scriptObj, researchPayloadJson) {
   const logs = [];
-  const $input = { first: () => ({ json: scriptObj }) };
+  const $input = {
+    first: () => {
+      throw new Error(
+        'Editorial Checks read $input. It is downstream of an HTTP Request node, so $input ' +
+          "is the fetch response, not the script. Read $('Script Ready').first().json."
+      );
+    },
+  };
   const $ = (name) => {
     if (name === 'Config') return { first: () => ({ json: CONFIG }) };
+    if (name === 'Script Ready' || name === 'Revision Parsed') {
+      return { first: () => ({ json: scriptObj }) };
+    }
     if (name === 'Prepare Research Payload') {
       return { first: () => ({ json: { payload_json: researchPayloadJson || '' } }) };
     }
@@ -166,6 +185,48 @@ const numsRes = runChecks(nums, '{}');
 const numsBlocking = numsRes.result.deterministic_violations.filter((v) => v.severity === 'blocking');
 for (const v of numsBlocking) console.log('    unexpected: ' + v.rule + ' -> ' + v.quote);
 ok(numsBlocking.length === 0, '"4 hours", "5 steps", "400 integrations" are NOT flagged');
+
+// ---------------------------------------------------------------------------
+// WIRING: the class of defect the cases above structurally cannot catch.
+//
+// Everything before this mocks the node's inputs, so it tests the code in
+// isolation and would pass just as happily if the node were wired to the wrong
+// upstream neighbour entirely. That is exactly what happened: round 1 of the
+// gate was fed by an HTTP Request node, saw no script on any run, and this
+// suite stayed green throughout.
+// ---------------------------------------------------------------------------
+console.log('\n=== WIRING: each gate round reads the right script ===');
+
+const feedersOf = (target) =>
+  Object.entries(workflow.connections)
+    .filter(([, c]) => (c.main || []).some((p) => p.some((x) => x.node === target)))
+    .map(([from]) => from);
+
+for (const [checks, source] of [
+  ['Editorial Checks', 'Script Ready'],
+  ['Editorial Checks (Round 2)', 'Revision Parsed'],
+]) {
+  const n = workflow.nodes.find((x) => x.name === checks);
+  const code = (n && n.parameters.jsCode) || '';
+  ok(!!n, checks + ' exists');
+  ok(!/\$input\b/.test(code), checks + ' does not read $input');
+  ok(code.includes("$('" + source + "')"), checks + " reads $('" + source + "')");
+  ok(
+    workflow.nodes.some((x) => x.name === source),
+    source + ' exists to be read'
+  );
+}
+
+// The judge must see the same script the checks did, or it adjudicates nothing.
+for (const [checks, verifier] of [
+  ['Editorial Checks', 'Editorial Verifier'],
+  ['Editorial Checks (Round 2)', 'Editorial Verifier (Round 2)'],
+]) {
+  ok(
+    feedersOf(verifier).includes(checks),
+    verifier + ' is fed by ' + checks + ' (so judge_payload_json carries the script)'
+  );
+}
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
 process.exit(failures === 0 ? 0 : 1);
