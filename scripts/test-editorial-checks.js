@@ -93,6 +93,16 @@ const ok = (cond, msg) => {
 // ---------------------------------------------------------------------------
 // POSITIVE: the real hallucinated script
 // ---------------------------------------------------------------------------
+// Derived exactly as LENGTH_BUDGET in build-workflow.js does it, and from the
+// same live Config values -- NOT from VIDEO_LENGTH_MINUTES * 130, which is the
+// stale formula whose disagreement with the real speech rate is the reason the
+// budget was centralised in the first place. If these two derivations ever
+// drift apart again, this suite goes green while the gate is wrong.
+const MAX_WORDS = Math.round(
+  ((Number(CONFIG.MAX_VIDEO_SECONDS) || 180) * (Number(CONFIG.SPEECH_WPM) || 141)) / 60
+);
+const TARGET = Math.round(MAX_WORDS / 1.1);
+
 console.log('\n=== POSITIVE: fixtures/hallucinated-script.json (real execution 654) ===');
 const fixture = JSON.parse(
   fs.readFileSync(path.join(ROOT, 'fixtures', 'hallucinated-script.json'), 'utf8')
@@ -123,17 +133,26 @@ for (const known of fixture._known_violations) {
   ok(!!hit, known.rule + ' @' + known.where + ' caught "' + known.must_contain + '"  (' + known.phrase.slice(0, 52) + '…)');
 }
 ok(bad.result.deterministic_blocking >= 5, 'at least 5 blocking violations (got ' + bad.result.deterministic_blocking + ')');
+// The fixture is 336 words. Against the old 520-word target (VIDEO_LENGTH_MINUTES
+// 4 x 130) that fell under the 70% floor and fired `too-short`. Against the
+// 3-minute budget -- 385 target, 270 floor -- it sits inside the band and must
+// NOT fire.
+//
+// Asserted in the negative rather than deleted. Deleting it was the tempting
+// fix and the wrong one: the lower bound would then have had no coverage at
+// all and nothing would have gone red. The real lower-bound case is synthetic
+// and lives in the FORMAT group, sized from TARGET so it moves with Config.
 ok(
-  found.some((v) => v.rule === 'too-short'),
-  'the 336-word script is flagged as too short'
+  !found.some((v) => v.rule === 'too-short'),
+  'the 336-word fixture is NOT too short against the ' + TARGET + '-word target (floor ' +
+    Math.round(TARGET * 0.7) + ')'
 );
 
 // ---------------------------------------------------------------------------
 // A clean script in the CURRENT format: "Did you know?", BODY_SECTIONS
 // sections, FOOTAGE_KEYWORDS distinct keywords, near the word target.
 // ---------------------------------------------------------------------------
-const SECTIONS = Number(CONFIG.BODY_SECTIONS) || 4;
-const TARGET = Math.round((Number(CONFIG.VIDEO_LENGTH_MINUTES) || 4) * 130);
+const SECTIONS = Number(CONFIG.BODY_SECTIONS) || 3;
 const KW_COUNT = Number(CONFIG.FOOTAGE_KEYWORDS) || 12;
 
 const KEYWORDS = [
@@ -308,6 +327,53 @@ ok(
   'an overlong script is blocked (1606 words against a 1040 target shipped once)'
 );
 
+// The lower bound, sized from TARGET so it tracks Config instead of hardcoding
+// a word count that silently stops testing anything when the format changes.
+// This is the coverage the fixture used to provide before the 3-minute budget
+// moved the floor underneath it.
+const shortScript = cleanScript();
+shortScript.script.body = shortScript.script.body.map(() => 'Far too brief.');
+shortScript.script.hook = 'A short hook.';
+shortScript.script.cta = 'Radiographers and AI practitioners, what would you automate?';
+{
+  const res = runChecks(shortScript, '{}', ARCHIVE).result;
+  ok(
+    res.deterministic_violations.some((v) => v.rule === 'too-short'),
+    'a script under the ' + Math.round(TARGET * 0.7) + '-word floor is blocked (got ' +
+      res.word_count + ' words)'
+  );
+}
+
+// The ceiling is maxWords directly, not a percentage of target. A script above
+// MAX_WORDS is more speech than MAX_VIDEO_SECONDS can hold at SPEECH_WPM, which
+// is the whole point of the 3-minute format. Under the old `target * 1.35` rule
+// this length passed.
+// A BOUNDARY case, deliberately. It must land above MAX_WORDS (423) but below
+// the old `target * 1.35` bound (520), because a 1200-word script proves
+// nothing -- the previous rule caught that too. Only a script in the gap
+// between the two rules can tell them apart, and this one fails if the ceiling
+// ever silently reverts to a percentage of target.
+{
+  const overCeiling = cleanScript();
+  const cleanWords = runChecks(cleanScript(), '{}', ARCHIVE).result.word_count;
+  const needed = MAX_WORDS - cleanWords + 12;
+  ok(needed > 0, 'boundary case is constructible (clean ' + cleanWords + ' < ceiling ' + MAX_WORDS + ')');
+  const filler = ' padding'.repeat(needed);
+  overCeiling.script.body = overCeiling.script.body.map((b, i) => (i === 0 ? b + filler : b));
+
+  const res = runChecks(overCeiling, '{}', ARCHIVE).result;
+  ok(
+    res.word_count > MAX_WORDS && res.word_count < Math.round(TARGET * 1.35),
+    'boundary script sits between the new ceiling and the old one (' + res.word_count +
+      ' is >' + MAX_WORDS + ' and <' + Math.round(TARGET * 1.35) + ')'
+  );
+  ok(
+    res.deterministic_violations.some((v) => v.rule === 'too-long'),
+    'a script just over the ' + MAX_WORDS + '-word ceiling is blocked (got ' + res.word_count +
+      ' words; the old target*1.35 rule would have passed it)'
+  );
+}
+
 const fewKw = cleanScript();
 fewKw.pexels_search_keywords = KEYWORDS.slice(0, 5);
 ok(
@@ -383,6 +449,63 @@ for (const [checks, verifier] of [
   ok(
     feedersOf(verifier).includes(checks),
     verifier + ' is fed by ' + checks + ' (so judge_payload_json carries the script)'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// WIRING: the render result is read from the node that runs ONCE
+// ---------------------------------------------------------------------------
+// Worker · Render Status runs once per 20s poll iteration. Reading it with
+// .first() returns the FIRST poll -- {status: "running"}, before any of the
+// completion fields exist -- so every field comes back undefined on every run
+// and it reads as "the worker never reports this". Render Done sits on the
+// Switch's 'done' output, runs exactly once, and is the only correct source.
+console.log('\n=== WIRING: render results come from Render Done, not a poll ===');
+{
+  const rd = workflow.nodes.find((x) => x.name === 'Render Done');
+  ok(!!rd, 'Render Done exists');
+
+  const rdCode = (rd && rd.parameters.jsCode) || '';
+  // $input is CORRECT here: the polled job dict is the item flowing through,
+  // and the Switch passes it straight along. This is the documented exception
+  // to the "Code nodes downstream of an HTTP fetch must read by name" rule.
+  ok(/\$input\b/.test(rdCode), 'Render Done reads $input (the job dict IS the item)');
+
+  ok(
+    (workflow.connections['Switch · Render State'].main[0] || []).some(
+      (c) => c.node === 'Render Done'
+    ),
+    "Render Done is on the Switch's 'done' output (so it runs once, at completion)"
+  );
+  ok(
+    (workflow.connections['Render Done'].main[0] || []).some(
+      (c) => c.node === 'Worker · Download Video'
+    ),
+    'Render Done feeds Worker · Download Video (it is in the spine, not a dead end)'
+  );
+
+  const fl = workflow.nodes.find((x) => x.name === 'Final Log');
+  const flCode = (fl && fl.parameters.jsCode) || '';
+  ok(flCode.includes("$('Render Done')"), "Final Log reads $('Render Done')");
+  ok(
+    !/\$\('Worker · Render Status'\)/.test(flCode),
+    'Final Log does NOT read $(\'Worker · Render Status\') (that returns the first poll)'
+  );
+
+  // The advisory ceiling is only worth having if the overrun surfaces.
+  for (const field of ['over_length', 'measured_wpm', 'voiceover_seconds']) {
+    ok(rdCode.includes(field), 'Render Done carries ' + field);
+    ok(flCode.includes(field), 'Final Log reports ' + field);
+  }
+}
+
+// The worker must be told the ceiling, or it falls back to its own env default
+// and the Config knob silently controls nothing.
+{
+  const rv = workflow.nodes.find((x) => x.name === 'Worker · Render Video');
+  ok(
+    (rv.parameters.jsonBody || '').includes('max_seconds'),
+    'Worker · Render Video sends max_seconds to the worker'
   );
 }
 
