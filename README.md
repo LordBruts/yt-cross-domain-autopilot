@@ -1,8 +1,13 @@
 # YT Cross-Domain Autopilot — AI × Radiology
 
 A scheduled n8n pipeline that finds a real, sourced fact at the **intersection** of AI automation
-and radiology, writes a 4-minute "Did you know?" script around it, renders the video with burned-in
-captions, and uploads it to YouTube. No manual trigger, no human input per run.
+and radiology, writes a **3-minute** "Did you know?" script around it, renders the video with
+burned-in captions, and uploads it to YouTube. No manual trigger, no human input per run.
+
+Voiceover is **ElevenLabs** (`eleven_multilingual_v2`) with **edge-tts** as a first-class fallback —
+the ElevenLabs free tier covers about four videos a month, which is why the cadence is weekly and
+why the fallback is a normal operating mode rather than an error path. See
+[Voiceover](#voiceover-elevenlabs-with-edge-tts-as-a-first-class-fallback).
 
 Two things make or break a run, and neither is visible in a green execution:
 
@@ -13,6 +18,30 @@ Two things make or break a run, and neither is visible in a green execution:
   not ship.
 
 **Status: built, deployed, scheduled and active.** Three full runs have completed end to end.
+
+### 3-minute / ElevenLabs change — verification status (2026-09-12)
+
+Deployed: **54 nodes, active, no orphans, all 13 credentials attached.** Verified against the
+worker over HTTP; **no full n8n run has been made since** (that costs an upload and YouTube quota,
+and the first scheduled run will exercise it).
+
+| Check | Result |
+|---|---|
+| Build + editorial regression suite | **pass** — includes a new boundary case at 507 words |
+| Alignment unit tests (`worker/tests/`) | **13/13**, on host and in-container |
+| ElevenLabs auth / voice / alignment | **pass** — 18-char probe, 3 words → 3 timings |
+| Character→word fold at scale | **pass** — 66-word sample → 66 timings, 22 cues |
+| Spend guard (`MAX_TTS_CHARS`) | **pass** — 9,300-char script refused in **3.6 ms**, 0 characters spent |
+| Advisory ceiling ships anyway | **pass** — 450 words vs a 120 s ceiling → `over_length: true, by 22.5s`, `status: done` |
+| Full render, edge provider | **pass** — 142.49 s voiceover → 142.49 s video (0.00 s drift), 5.7 MB, thumbnail 13 KB |
+| Build guards (privacy / attribution / retry) | **pass** — all three verified to actually refuse |
+| Clip pool at 48 | **not yet exercised** — needs a run with real Pexels URLs; watch `clips_downloaded` / `unique_clips` in `Final Log` |
+| Full ElevenLabs render at target length | **not run** — deliberately: it costs ~2,610 of 10,000 monthly characters and the arithmetic is linear from the 66-word calibration |
+
+ElevenLabs characters spent verifying: **412 of 10,000**.
+
+**Not implemented: the HyperFrames renderer.** Rendering is still Pexels + ffmpeg with burned-in
+ASS captions. See [the renderer note](#hyperframes-not-yet-implemented).
 
 Execution 654 completed in 9.2 minutes and uploaded a real private video. It researched 50 videos
 across the 5 channels, fetched 6 transcripts, produced a cross-domain topic, wrote the script and
@@ -46,7 +75,7 @@ rules — they were the rules being wrong:
 All four are addressed below. The last one is the reason the [grounding
 archive](#grounding-where-the-facts-come-from) exists.
 
-The schedule is **active** (every 3 days at 09:00) and uploads are `private`. Read the description
+The schedule is **active** (weekly at 09:00) and uploads are `private`. Read the description
 of whatever it uploads: a script with surviving blocking violations is uploaded anyway, flagged, and
 forced to `private` regardless of `PRIVACY_STATUS`.
 
@@ -70,7 +99,7 @@ have read nothing. Instead of rebuilding the n8n image on every upgrade, the too
 ```
 n8n container (untouched)                     yt-media-worker
 ──────────────────────────                    ───────────────────────────
-Schedule (every 3 days, 09:00)                python3 · ffmpeg · edge-tts
+Schedule (weekly, 09:00)                      python3 · ffmpeg · ElevenLabs/edge-tts
   → Config (Set node)                         youtube-transcript-api
   → Postgres · Content Memory ──┐             FastAPI on host port 8099
   → 5× YouTube search.list      │
@@ -334,13 +363,177 @@ Burning in forces a re-encode at the mux step — there is no stream-copy path t
 
 ---
 
+## HyperFrames: not yet implemented
+
+The intended end state is that **HeyGen HyperFrames** replaces both the ffmpeg shot assembly and
+the ASS caption burn-in: one HTML composition holding the Pexels clips as `<video>` tracks, the
+karaoke captions, a title card and per-section cards, rendered to MP4 in a single pass. That is a
+net *simplification* — it deletes the shot loop and `build_ass()` rather than adding to them.
+
+**None of it is in the pipeline.** Rendering is unchanged. What follows is what has been
+established so far, so the work can resume without re-deriving it.
+
+### Verified
+
+| | |
+|---|---|
+| Package | `hyperframes@0.8.36` on npm, plus `@hyperframes/{core,engine,producer}` at the same version |
+| Licence | Apache-2.0 — no per-render fee, no HeyGen account for local rendering |
+| Runtime | `engines.node >= 22`; requires ffmpeg |
+| Browser | `puppeteer-core` + `@puppeteer/browsers` — it fetches its **own** Chromium rather than using apt's, which matters because Debian's mirror is pathologically slow from this machine |
+| Heavy deps | `sharp`, `onnxruntime-node` (native), `esbuild` |
+| CLI | `bin/hyperframes.mjs`, plus `hyperframes-localize-fonts` |
+
+**It is pre-1.0 (0.8.x).** Treat the composition format as unstable and pin the exact version.
+
+### The composition schema — read out of the package, not guessed
+
+`npx hyperframes init` produces **no output and no project** when run non-interactively, and `npx
+… --help` fails on a corrupted npx cache. The schema below was instead read from
+`node_modules/hyperframes/dist/templates/` and `dist/cli.js` after a local install. That is the
+authoritative source; re-read it when bumping the version, because this is 0.8.x software.
+
+A stage is a `<div>` carrying `data-composition-id`, `data-start`, `data-duration`, `data-width`,
+`data-height`. Children are `class="clip"` with `data-start`, `data-duration`, `data-track-index`
+(z-order / layering), `data-volume`.
+
+**The three questions that gate the port are all answered, and all favourably:**
+
+| Question | Answer |
+|---|---|
+| How is **fps** declared? | A render **option** (`options.fps`), not a stage attribute. Default **30** — already the target. |
+| Does a `<video>` clip support a **source in-point**? | **Yes — `data-playback-start`**, alongside `data-playback-rate` and `data-loop`. The offset walk that stops a reused clip looking repetitive ports directly; no pre-trimmed per-shot files needed. |
+| What is the **seek hook**? | A **paused GSAP timeline** published as `window.__timelines["<composition-id>"]`, driven by `.seek()`. Deterministic by construction. |
+
+The determinism boundary still bites: any `rAF`, `setInterval` or `Date.now()` logic renders frozen
+or jittering under frame-stepped capture and looks **correct** in `hyperframes preview`. Everything
+animated must hang off that GSAP timeline.
+
+**The single biggest de-risking finding:** the stock `captions.html` template drives its captions
+from an array of `{ "text": ..., "start": ..., "end": ... }` — **byte-identical to the shape
+`fold_characters_to_words()` already returns** and to what edge-tts produces. The word timings can
+be injected verbatim, with no transformation layer and nothing new to unit-test.
+
+Still unverified: whether `@hyperframes/producer` exposes a progress callback, and whether any
+HTTP/server mode exists (none found — assume a wrapper must be written).
+
+### The decision that gates the work
+
+3 minutes at 30 fps is **5,400 Puppeteer frame captures**, with video decode in headless Chrome —
+the slow part. The current ffmpeg path measures ~1.3× realtime. So Phase 3 is a **benchmark, not an
+implementation**: a 15 s, 1920×1080, 30 fps composition containing a real Pexels clip as a `<video>`
+track plus 3-word karaoke captions, run **under load** (this host swings ~5× with other containers
+busy).
+
+| 15 s bench | Extrapolated 3 min | Verdict |
+|---|---|---|
+| ≤ 40 s | ≤ 8 min | **Go** |
+| 40–110 s | 8–22 min | Flag only; never make it the default |
+| > 110 s | > 22 min | **Stop.** Keep ffmpeg, and record the number here |
+
+A composition without video decode benchmarks the wrong thing by an order of magnitude.
+
+### Architecture, when it happens
+
+A **second** service in `worker/docker-compose.yml` (`node:22-bookworm-slim` + hyperframes, port
+8098, `shm_size: 1gb` — Docker's 64 MB default kills headless Chrome as `Target closed`, which
+reads as a composition bug), sharing the `/data/jobs` volume. The Python worker keeps owning the
+job lifecycle and calls it over HTTP.
+
+Compose creates a **user-defined network per project**, so those two sidecars resolve each other by
+service name (`http://yt-hyperframes:8098`). n8n was started by a different project on the default
+bridge and does **not** get that — n8n→worker stays `host.docker.internal:8099`. Do not unify them
+"for consistency"; it breaks one or the other.
+
+Keep the ffmpeg path behind a `RENDERER` knob defaulting to `ffmpeg`, and extract `plan_shots()` as
+a pure function shared by both — otherwise the two paths drift apart within a few commits and
+"matches the old look" quietly stops being true, invisibly, because the flag defaults away from the
+new one. The thumbnail stays in ffmpeg either way.
+
+---
+
+## Voiceover: ElevenLabs, with edge-tts as a first-class fallback
+
+`synthesize()` in `worker/app.py` is a dispatcher over two providers that return an **identical**
+contract: an mp3 at the given path, plus word timings as `[{text, start, end}]`. Everything
+downstream — the ASS caption builder, the shot planner, the mux — is unchanged and provider-blind.
+
+**The fallback is not an error path.** The ElevenLabs free tier is 10,000 characters a *month* and
+a 3-minute script is ~2,610 of them, so the quota covers **roughly 4 videos**. At a weekly cadence
+(~4.33 runs/month) about one run a month runs on edge-tts by arithmetic, not by failure. Treat it
+as a normal operating mode.
+
+Fallback triggers, each recorded in `tts_fallback_reason`: no API key, no voice id, insufficient
+remaining quota (checked by a free preflight against `/v1/user/subscription`), HTTP 401/403, HTTP
+402, any network error, empty alignment, empty audio.
+
+### Character-level alignment, folded to words
+
+ElevenLabs' `/with-timestamps` endpoint returns **one timestamp per character**; the caption builder
+needs one per word. `worker/alignment.py` does that fold and is the only pure, stdlib-only module in
+the worker — deliberately, so `worker/tests/test_alignment.py` can exercise the **real** function
+with no container and no dependencies. There is no second copy of the logic in a fixture. 13 tests,
+including the negative cases that matter:
+
+- **Use `alignment`, never `normalized_alignment`.** The normalized variant rewrites the text it
+  timed — "33%" becomes "thirty three percent" — so the captions would say something different from
+  the script while the audio, the duration and the upload all stayed perfect. Nothing errors; the
+  only way to notice is to watch the finished video.
+- **Mismatched array lengths raise rather than truncate.** `zip()` over unequal arrays stops
+  silently at the shortest, which would end the captions part-way through the video — most likely
+  in the back half nobody rewatches.
+- Audio is written to a temp file and `os.replace()`d. Writing straight to `voiceover.mp3` and then
+  falling back would leave a truncated file where the next stage expects a complete one.
+
+### Spending guards
+
+The free tier is small enough that a single duplicate call is 25% of the month.
+
+- **`Worker · Render Video` has no `retryOnFail`.** A retried POST whose first attempt actually
+  succeeded server-side starts a second render — a second paid synthesis, on a duplicate video
+  nobody watches. A **build guard refuses to write `workflow.json`** if `retryOnFail`/`maxTries`
+  reappear on that node.
+- **The worker de-duplicates** by `sha256(script_text + title)` with a 1-hour TTL, so a genuine
+  transport failure can be retried safely: the repeat request returns the original `job_id` with
+  `deduplicated: true`.
+- **`GET /tts/quota`** reports the month's spend and a `videos_remaining_estimate`. It is manual and
+  is **never** called during a render — a render must not depend on a second vendor call succeeding.
+- Every job records `tts_characters`.
+
+### The silent-failure surface
+
+A wrong voice id, a revoked key or an exhausted quota all produce a **perfectly good video** via
+edge-tts. Nothing errors. The only symptoms are `tts_provider` and `tts_fallback_reason`, reported
+in the job dict, in `Final Log`, and (for configuration) on `GET /health`. This is the same class as
+the pre-existing silent DejaVu font fallback, and it is surfaced the same way — check it before
+concluding ElevenLabs is working.
+
+### Licensing: private uploads are a constraint, not a preference
+
+The free tier grants **no commercial rights** and **requires attribution**. Two controls:
+
+- `TTS_ATTRIBUTION_TEXT` is appended to the YouTube description, **conditional on
+  `tts_provider === 'elevenlabs'`**. An unconditional line would credit a vendor that had nothing to
+  do with a run that fell back to edge.
+- A **build guard refuses to write** if `PRIVACY_STATUS` is anything but `private`, or if
+  `TTS_ATTRIBUTION_TEXT` is empty. Flipping to public is then a deliberate act: pay for a plan (or
+  set `TTS_PROVIDER=edge`) and remove the guard in the same commit, so the reason is recorded.
+
+### Where the key lives
+
+`worker/.env` only — gitignored, `env_file` in `docker-compose.yml`, `required: false` so the worker
+still starts without it. **Never the n8n Config node**: Config values are written into
+`workflow.json`, and that file is committed.
+
+---
+
 ## Spec node → implementation
 
 Every node in the original spec is accounted for. Five moved into the worker.
 
 | Spec node | Implemented as | Note |
 |---|---|---|
-| 1 Schedule | `Schedule · Every 3 Days 09:00` | `daysInterval: 3`, 09:00 Africa/Lagos |
+| 1 Schedule | `Schedule · Weekly 09:00` | `daysInterval: 7`, 09:00 Africa/Lagos |
 | 2 Search ×5 | `Build Channel List` → `YT · Search Channel` | domain tagged by `channelId`, not position |
 | 3 Statistics | `YT · Batch Statistics` → `Rank & Balance Domains` | **one** batched call, see corrections |
 | 4 Transcripts | worker `POST /transcripts` | `fetch_transcripts.py` logic, incl. `domain_map` |
@@ -517,11 +710,16 @@ Open the **Config** node. Everything non-secret lives there, editable in the UI 
 | `CHANNEL_RADIOLOGY_1..2` | Radiology Channel, Radiology Tutorials |
 | `CHANNEL_*_DOMAIN` | `AI automation` / `radiology/healthcare` |
 | `NICHE_CONTEXT`, `TARGET_AUDIENCE` | as specified |
-| `VIDEO_LENGTH_MINUTES` | `4` — ~520 words |
-| `BODY_SECTIONS` | `4` — enforced exactly |
+| `MAX_VIDEO_SECONDS` | `180` — advisory ceiling; over-length ships anyway |
+| `SPEECH_WPM` | `165` — a MEASUREMENT; drives the whole word budget |
+| `VIDEO_LENGTH_MINUTES` | `3` — prose only; no word count derives from it |
+| `BODY_SECTIONS` | `3` — enforced exactly (~103 words each) |
 | `SHOT_SECONDS` | `4` — one new shot every 4 s |
 | `FOOTAGE_KEYWORDS` | `12` — distinct search terms |
 | `FOOTAGE_PER_KEYWORD` | `4` — up to 48 clips per run |
+| `FOOTAGE_POOL_MAX` | `48` — was hardcoded to 10 downstream; see below |
+| `FOOTAGE_MIN_DURATION` | `15` — must exceed `SHOT_SECONDS` for the offset walk |
+| `TTS_ATTRIBUTION_TEXT` | appended only on ElevenLabs runs |
 | `RESEARCH_MODEL` | `openai/gpt-5.6-luna` |
 | `WRITER_MODEL` | `anthropic/claude-sonnet-4.5` |
 | `JUDGE_MODEL` | `openai/gpt-5.6-luna` |
@@ -531,11 +729,23 @@ Open the **Config** node. Everything non-secret lives there, editable in the UI 
 The three model fields replaced a single `LLM_MODEL`. Keep `WRITER_MODEL` and `JUDGE_MODEL` on
 different vendors — see [the judge](#layer-3--the-judge-editorial-verifier).
 
-`FOOTAGE_KEYWORDS × FOOTAGE_PER_KEYWORD` is the clip pool, and `VIDEO_LENGTH_MINUTES × 60 /
-SHOT_SECONDS` is the number of shots. At the defaults that is 48 clips for ~60 shots, so a clip
-reappears about a dozen times — and when it does, the worker seeks to a **different offset** in it,
-so the repeat is different footage from the same source. Lowering `FOOTAGE_KEYWORDS` or raising
-`VIDEO_LENGTH_MINUTES` without raising the pool brings the repetition back.
+`FOOTAGE_KEYWORDS × FOOTAGE_PER_KEYWORD` is the clip pool, and `MAX_VIDEO_SECONDS / SHOT_SECONDS`
+is the number of shots — at the defaults, 48 clips for ~45 shots, so most clips are used once.
+
+**`Collect Footage URLs` used to cap that pool at a hardcoded 10** while Config advertised 48. That
+is 45 shots drawn from 10 clips, each reappearing ~5 times: the exact repetition `SHOT_SECONDS` was
+introduced to prevent, reintroduced two nodes downstream of it where nothing in Config hinted at it.
+The cap is now `FOOTAGE_POOL_MAX`.
+
+The offset walk that makes a reused clip show *different* footage depends on headroom
+(`clip_length − shot_length`). Pexels `min_duration` was **8** against 4-second shots, leaving 4
+seconds to walk before wrapping — so reuse looked far more repetitive than the design implied. It is
+now `FOOTAGE_MIN_DURATION` = 15, giving 11 seconds of genuine variation.
+
+Raising the pool raises download volume ~5× (200–400 MB), and 48 clips at the 120 s per-clip timeout
+is 96 minutes inside a 90-minute execution — hence `DOWNLOAD_BUDGET_SECONDS` (420 s) as a **total**
+budget. Running out degrades variety rather than failing the run. `Final Log` reports
+`clips_downloaded` and `download_budget_hit`.
 
 ### 5. Run it once by hand
 
@@ -660,8 +870,11 @@ YouTube quota, against a 10,000/day default:
 | 1× `thumbnails/set` | 50 |
 | **Per run** | **~2,151** |
 
-Comfortable at every 3 days. Daily would also fit, but the same channels' top-viewed videos barely
-change day to day, so topics would start repeating.
+YouTube quota is comfortable at any cadence here. **The binding constraint is ElevenLabs**: the
+free tier is 10,000 characters/month and a 3-minute script is ~2,610, so the quota covers about
+**4 videos a month**. Weekly (~4.33 runs) is therefore the right cadence — roughly one run a month
+falls back to edge-tts by arithmetic, which is what the fallback is for. Every 3 days (~10 runs)
+would exhaust the month's characters in under two weeks.
 
 ### Measured on the first live run
 
@@ -790,18 +1003,87 @@ Four mitigations are in place:
 
 - The script instruction sets a **per-section word budget** rather than one total. Per-section
   targets control LLM length far better than a single overall number.
-- **`Editorial Checks` enforces both bounds** — under 70% *and* over 135% of target are blocking —
-  alongside every other ruling, so one component owns quality and there is a single threshold rather
-  than two that drift apart. If it is still wrong after the revision round the run proceeds anyway
-  (shipping a slightly off-length video beats discarding a whole run's research) and `Final Log`
-  reports `script_word_count` and `script_word_target`.
-- `VIDEO_LENGTH_MINUTES` is **4**, so the target is ~520 words. Shorter is also cheaper and faster:
-  render and upload were 29 of the 36 minutes an 8-minute run took.
+- **`Editorial Checks` enforces both bounds** — under 70% of target *and* over the hard word
+  ceiling are blocking — alongside every other ruling, so one component owns quality and there is a
+  single threshold rather than two that drift apart. If it is still wrong after the revision round
+  the run proceeds anyway (shipping a slightly off-length video beats discarding a whole run's
+  research) and `Final Log` reports `script_word_count` and `script_word_target`.
+- The format is now **3 minutes**, derived rather than declared — see below.
 - `WRITER_MODEL` is `anthropic/claude-sonnet-4.5`. This is the main reason the per-run cost is
   ~$0.05 rather than fractions of a cent, and it is the right place to spend it.
 
 **Do not "save money" by pointing `WRITER_MODEL` at the judge's model.** It would collapse the
 cross-vendor separation the gate depends on, and nothing in the test suite would fail.
+
+### The 3-minute budget is DERIVED, not declared
+
+There used to be two independent length constants and they disagreed exactly at the margin: the
+writer's target was `VIDEO_LENGTH_MINUTES * 130`, while the ceiling was `target * 1.35`. At a
+130 wpm assumption that permitted 183 s of speech against a 180 s intent — the gate passed scripts
+the format could not hold, and looked correct doing it. Same failure class as the `|| 8` vs `|| 4`
+fallback drift corrected earlier.
+
+Now there are two inputs and everything else falls out of them:
+
+```
+MAX_VIDEO_SECONDS = 180     Config knob, advisory ceiling
+SPEECH_WPM        = 165     Config knob, a MEASUREMENT
+
+maxWords    = MAX_VIDEO_SECONDS * SPEECH_WPM / 60   -> 495   (hard, blocking)
+targetWords = maxWords / 1.10                       -> 450   (what the writer is asked for)
+floor       = targetWords * 0.70                    -> 315   (blocking)
+perSection  = (targetWords - 140) / BODY_SECTIONS   -> ~103
+```
+
+The derivation is a single string, `LENGTH_BUDGET` in `build-workflow.js`, embedded verbatim into
+both the node that instructs the writer and the node that judges the result. They cannot drift
+because there is one copy. `test-editorial-checks.js` re-derives the same numbers from the live
+Config, so a change to either knob moves the assertions with it.
+
+### `SPEECH_WPM` is a measurement, and the old number was wrong
+
+**Measured on this stack, over the wire:**
+
+| Provider | Voice | Sample | Result |
+|---|---|---|---|
+| ElevenLabs `eleven_multilingual_v2` | `JBFqnCBsd6RMkjVDRZzb` | 66 words / 23.41 s | **169.2 wpm** |
+| edge-tts | `en-GB-RyanNeural` | 450 words / 142.49 s | **189.5 wpm** |
+
+The 141 wpm figure this repo previously carried (336 words → 142.7 s) is **not reproducible** and
+should not be trusted. Both real providers are substantially faster.
+
+`SPEECH_WPM` is set to **165** — deliberately below the measured 169.2, because the rate varies
+with the text (numbers, abbreviations and long proper nouns all read slower than plain prose) and
+the margin keeps the ceiling honest. At 165 a target script runs ~2 min 40 s and a ceiling script
+~2 min 55 s.
+
+The worker reports **`measured_wpm` on every job**, and `Final Log` surfaces it next to
+`configured_wpm`. If they disagree consistently, change `SPEECH_WPM` — that is the whole point of
+reporting it. Leaving it at edge's old 141 would have produced 385-word scripts that ElevenLabs
+reads in 2 min 16 s: three quarters of a minute short of the format, with nothing failing to
+indicate it.
+
+### The 180-second ceiling STEERS; it does not discard
+
+Two limits, with deliberately different severities. Conflating them is the mistake:
+
+| Limit | Where | Severity | Purpose |
+|---|---|---|---|
+| `maxWords` (495) | `Editorial Checks` | **blocking** | Refuses an overlong *script*, before any TTS spend |
+| `MAX_VIDEO_SECONDS` (180) | worker, post-TTS | **advisory** | Records `over_length` and ships anyway |
+| `MAX_TTS_CHARS` (3200) | worker, pre-TTS | **blocking** | Spend guard, not a length gate |
+
+A run that lands at 3:08 **still uploads**. Discarding a whole run's research, TTS spend and render
+time over eight seconds of runtime is a worse outcome than a slightly long video, so the worker
+records `over_length` / `over_length_by` and continues. Verified: a 450-word script against a
+lowered 120 s ceiling reported `over_length: true, over_length_by: 22.5` and proceeded to assemble.
+
+`MAX_TTS_CHARS` is the one hard stop, and it exists to protect money rather than format. Verified:
+a 9,300-character runaway was refused in **3.6 ms** with **zero characters spent**.
+
+`MAX_VIDEO_SECONDS` appears in both the Config node and the worker env, deliberately. The request
+may **lower** the ceiling, never raise it (`_effective_max`) — a safety limit a workflow can talk
+its way out of is not a limit.
 
 ---
 
