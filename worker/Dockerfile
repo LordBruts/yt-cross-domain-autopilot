@@ -29,7 +29,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY alignment.py .
 COPY app.py .
+# Tests ship with the image so the fold can be exercised against the deployed
+# code: docker exec yt-media-worker python -m unittest discover -s /app/tests
+COPY tests/ ./tests/
 
 ENV JOBS_ROOT=/data/jobs \
     PROMPTS_DIR=/prompts \

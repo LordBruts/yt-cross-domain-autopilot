@@ -17,9 +17,33 @@ services:
       # Job workspaces. Survives restarts so artifacts from a failed upload
       # are still recoverable.
       - yt_media_jobs:/data/jobs
+    env_file:
+      # Gitignored. Holds ELEVENLABS_API_KEY. Absent is fine: every value below
+      # has a default and the worker falls back to edge-tts without a key.
+      - path: .env
+        required: false
     environment:
       TTS_VOICE: en-GB-RyanNeural
       TRANSCRIPT_PROXY: ${TRANSCRIPT_PROXY:-}
+
+      # Text to speech. ElevenLabs primary, edge-tts fallback -- and the
+      # fallback is a normal operating mode, not an error path: the free tier
+      # is 10,000 characters/month against ~2,260 per video, so roughly every
+      # fifth weekly run uses edge.
+      TTS_PROVIDER: ${TTS_PROVIDER:-elevenlabs}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-JBFqnCBsd6RMkjVDRZzb}
+      ELEVENLABS_MODEL_ID: ${ELEVENLABS_MODEL_ID:-eleven_multilingual_v2}
+
+      # ADVISORY: over-length videos are recorded and shipped, not discarded.
+      MAX_VIDEO_SECONDS: ${MAX_VIDEO_SECONDS:-180}
+      # BLOCKING: a spend guard, not a length limit. A runaway script is
+      # refused before a single character is synthesized.
+      MAX_TTS_CHARS: ${MAX_TTS_CHARS:-3200}
+      # 48 clips at a 120s per-clip timeout is 96 minutes; the execution is 90.
+      DOWNLOAD_BUDGET_SECONDS: ${DOWNLOAD_BUDGET_SECONDS:-420}
+      # duration*40 at 180s is 7200s, longer than n8n's 5400s executionTimeout.
+      MUX_TIMEOUT_CAP: ${MUX_TIMEOUT_CAP:-2400}
 
 volumes:
   yt_media_jobs:

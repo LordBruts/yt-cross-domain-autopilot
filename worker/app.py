@@ -15,6 +15,8 @@ a single HTTP request open that long is needlessly fragile.
 """
 
 import asyncio
+import base64
+import hashlib
 import math
 import os
 import shutil
@@ -24,7 +26,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import edge_tts
 import httpx
@@ -32,9 +34,34 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
+# Pure, stdlib-only, and unit-tested in tests/test_alignment.py. Lives in its
+# own module so those tests need neither a container nor this file's imports.
+from alignment import fold_characters_to_words
+
 JOBS_ROOT = Path(os.environ.get("JOBS_ROOT", "/data/jobs"))
 PROMPTS_DIR = Path(os.environ.get("PROMPTS_DIR", "/prompts"))
 VOICE = os.environ.get("TTS_VOICE", "en-GB-RyanNeural")
+
+# --------------------------------------------------------------------------
+# text to speech
+# --------------------------------------------------------------------------
+# Two providers, one contract. ElevenLabs is the primary voice; edge-tts is the
+# fallback and is NOT vestigial -- the ElevenLabs free tier is 10,000 characters
+# a month against ~2,260 per video, so roughly every fifth weekly run has to use
+# it. Treat edge as a normal operating mode, not an error path.
+#
+# The key lives ONLY in the environment (worker/.env, gitignored). It must never
+# reach the n8n Config node: Config values are written into workflow.json, which
+# is committed.
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "elevenlabs").strip().lower()
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_BASE = os.environ.get("ELEVENLABS_BASE", "https://api.elevenlabs.io/v1")
+# A voice id, not a voice name -- the API takes the id in the URL path. List
+# them with: curl -H "xi-api-key: $KEY" https://api.elevenlabs.io/v1/voices
+# Default is "George", a stock voice available on the free tier.
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb").strip()
+ELEVENLABS_MODEL_ID = os.environ.get("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
+ELEVENLABS_OUTPUT_FORMAT = os.environ.get("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128")
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 # Display faces. Montserrat Black carries the burned-in captions (heavy, legible
@@ -87,6 +114,43 @@ SHOT_SECONDS_DEFAULT = float(os.environ.get("SHOT_SECONDS", "4"))
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 MAX_TRANSCRIPT_CHARS = 3000
 
+# --------------------------------------------------------------------------
+# length budget
+# --------------------------------------------------------------------------
+# Two limits with DELIBERATELY different severities. Conflating them is the
+# mistake: one protects the format, the other protects money.
+#
+# MAX_VIDEO_SECONDS is ADVISORY. A run that lands at 3:08 still ships. The job
+# records over_length and measured_wpm and carries on to upload, because
+# discarding a whole run's research, TTS spend and render time over eight
+# seconds of runtime is a worse outcome than a slightly long video. The real
+# defence against overlong videos is the editorial gate upstream, which refuses
+# a script above the word ceiling before a single character is synthesized.
+MAX_VIDEO_SECONDS = float(os.environ.get("MAX_VIDEO_SECONDS", "180"))
+
+# MAX_TTS_CHARS is BLOCKING, and it is a spend guard rather than a length gate.
+# ElevenLabs' free tier is 10,000 characters a MONTH and a normal 3-minute
+# script is ~2,260 of them, so one runaway draft can eat most of the budget in
+# a single call. 3200 chars is ~550 words (~3.9 min) -- comfortably above
+# anything the format should produce, so it only ever catches a genuine
+# runaway, never a merely-long script. Checked BEFORE synthesis: the whole
+# point is that a rejected script costs zero characters.
+MAX_TTS_CHARS = int(os.environ.get("MAX_TTS_CHARS", "3200"))
+
+# A wedged mux used to be able to outlive the thing meant to catch it: the
+# timeout is scaled to the material (duration * 40) and at 180s that is 7200s,
+# while n8n's executionTimeout is 5400s. The workflow would give up first and
+# the container would keep burning CPU on an orphaned encode.
+MUX_TIMEOUT_CAP = int(os.environ.get("MUX_TIMEOUT_CAP", "2400"))
+
+# Raising the footage pool from a hardcoded 10 to 48 raises download volume
+# roughly fivefold (200-400 MB). At a 120s per-clip timeout, 48 unlucky clips
+# is 96 minutes of downloading inside a 90-minute execution -- so the per-clip
+# timeout needs a total budget above it. Whatever has arrived when the budget
+# expires is what the video is built from; clips are optional by design and the
+# assembler already handles a short pool.
+DOWNLOAD_BUDGET_SECONDS = float(os.environ.get("DOWNLOAD_BUDGET_SECONDS", "420"))
+
 # Encoding an 8-minute 1080p30 video is the slowest thing this service does, and
 # it is the one step that can push a run past n8n's execution timeout. Measured
 # on this host (shared with 7 other containers): 'veryfast' ran ~10x slower than
@@ -101,6 +165,11 @@ app = FastAPI(title="yt-media-worker", version="1.0.0")
 
 _jobs: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
+
+# fingerprint -> (job_id, created_at). Guards against a retried POST spawning a
+# second paid synthesis; see the note in /render.
+_render_fingerprints: Dict[str, Tuple[str, float]] = {}
+RENDER_DEDUPE_TTL = float(os.environ.get("RENDER_DEDUPE_TTL", "3600"))
 
 
 # --------------------------------------------------------------------------
@@ -175,9 +244,62 @@ def health() -> Dict[str, Any]:
             "title": DISPLAY_FONT_FILE,
             "using_fallback": CAPTION_FONT_FILE == FONT or DISPLAY_FONT_FILE == FONT,
         },
+        # Same reasoning as the font block above: the TTS fallback is silent by
+        # design, so the configuration that decides it has to be visible here.
+        # A wrong or missing voice id produces perfectly good edge-tts videos
+        # forever while you believe you are paying for ElevenLabs.
+        "tts": {
+            "provider": TTS_PROVIDER,
+            "elevenlabs_key_present": bool(ELEVENLABS_API_KEY),
+            "elevenlabs_voice_id": ELEVENLABS_VOICE_ID or "MISSING",
+            "elevenlabs_model_id": ELEVENLABS_MODEL_ID,
+            "edge_voice": VOICE,
+        },
+        "limits": {
+            "max_video_seconds": MAX_VIDEO_SECONDS,
+            "max_tts_chars": MAX_TTS_CHARS,
+            "download_budget_seconds": DOWNLOAD_BUDGET_SECONDS,
+            "mux_timeout_cap": MUX_TIMEOUT_CAP,
+        },
         "voice": VOICE,
         "jobs_tracked": len(_jobs),
     }
+
+
+@app.get("/tts/quota")
+def tts_quota() -> Dict[str, Any]:
+    """Manual. Deliberately NOT called during a render.
+
+    A render must not depend on a second vendor call succeeding -- the balance
+    preflight inside the ElevenLabs path is advisory and non-fatal for exactly
+    that reason. This endpoint exists so a human can check the month's spend
+    before triggering a run.
+    """
+    if not ELEVENLABS_API_KEY:
+        return {"ok": False, "error": "no ELEVENLABS_API_KEY configured"}
+    try:
+        resp = httpx.get(
+            ELEVENLABS_BASE + "/user/subscription",
+            headers={"xi-api-key": ELEVENLABS_API_KEY},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        d = resp.json()
+        used = int(d.get("character_count", 0))
+        limit = int(d.get("character_limit", 0))
+        return {
+            "ok": True,
+            "tier": d.get("tier"),
+            "character_count": used,
+            "character_limit": limit,
+            "remaining": limit - used,
+            # ~2,610 characters per video: a 450-word script (the target at
+            # SPEECH_WPM 165) at ~5.8 characters per word including spaces.
+            "videos_remaining_estimate": (limit - used) // 2610,
+            "next_reset_unix": d.get("next_character_count_reset_unix"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
 
 
 @app.get("/prompts/{name}", response_class=PlainTextResponse)
@@ -271,7 +393,7 @@ def transcripts(req: TranscriptRequest) -> Dict[str, Any]:
 # --------------------------------------------------------------------------
 # voiceover + burned-in captions
 # --------------------------------------------------------------------------
-def synthesize(text: str, voice: str, out_mp3: Path) -> List[Dict[str, Any]]:
+def _synthesize_edge(text: str, voice: str, out_mp3: Path) -> List[Dict[str, Any]]:
     """Writes the mp3 and returns word-level timings in one pass.
 
     Uses the edge-tts Python API rather than the CLI because the CLI's
@@ -300,6 +422,162 @@ def synthesize(text: str, voice: str, out_mp3: Path) -> List[Dict[str, Any]]:
 
     asyncio.run(_run())
     return words
+
+
+class TTSFallback(Exception):
+    """Raised when the ElevenLabs path cannot proceed and edge-tts should run.
+
+    Carries a machine-readable reason so the job dict records WHY the fallback
+    happened. A silent fallback is the dangerous case: the video comes out
+    fine, so nothing looks wrong, and you can believe you are on ElevenLabs for
+    months while every run is edge.
+    """
+
+
+def _elevenlabs_remaining() -> Optional[int]:
+    """Characters left this month, or None if it cannot be determined.
+
+    Free, and deliberately not fatal: if this call fails we simply do not know
+    the balance and let the synthesis attempt proceed -- a quota problem will
+    surface as a 401/402 there. Never let a secondary vendor call be the thing
+    that breaks a render.
+    """
+    try:
+        resp = httpx.get(
+            ELEVENLABS_BASE + "/user/subscription",
+            headers={"xi-api-key": ELEVENLABS_API_KEY},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return int(data["character_limit"]) - int(data["character_count"])
+    except Exception as exc:  # noqa: BLE001 - advisory only
+        print("[tts] could not read ElevenLabs balance: %s" % exc, flush=True)
+        return None
+
+
+def _synthesize_elevenlabs(text: str, out_mp3: Path) -> List[Dict[str, Any]]:
+    """Synthesize via ElevenLabs, returning edge-tts-shaped word timings.
+
+    Raises TTSFallback for anything recoverable, so the caller can fall back to
+    edge-tts rather than losing the run.
+    """
+    if not ELEVENLABS_API_KEY:
+        raise TTSFallback("no_api_key")
+    if not ELEVENLABS_VOICE_ID:
+        raise TTSFallback("no_voice_id")
+
+    # Preflight. The free tier is 10,000 characters a MONTH and a 3-minute
+    # script is ~2,260, so the quota genuinely runs out -- roughly every fifth
+    # weekly run. Checking first turns that from a mid-render 402 into a clean,
+    # logged decision to use edge for this one.
+    remaining = _elevenlabs_remaining()
+    if remaining is not None and remaining < len(text):
+        raise TTSFallback("insufficient_quota:%d_left_%d_needed" % (remaining, len(text)))
+
+    try:
+        resp = httpx.post(
+            "%s/text-to-speech/%s/with-timestamps" % (ELEVENLABS_BASE, ELEVENLABS_VOICE_ID),
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+            json={
+                "text": text,
+                "model_id": ELEVENLABS_MODEL_ID,
+                "output_format": ELEVENLABS_OUTPUT_FORMAT,
+            },
+            timeout=300.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise TTSFallback("network_error:%s" % type(exc).__name__) from exc
+
+    if resp.status_code in (401, 403):
+        raise TTSFallback("auth_failed:%d" % resp.status_code)
+    if resp.status_code == 402:
+        raise TTSFallback("quota_exceeded")
+    if resp.status_code >= 400:
+        raise TTSFallback("http_%d:%s" % (resp.status_code, resp.text[:200]))
+
+    payload = resp.json()
+
+    # `alignment`, never `normalized_alignment`. Normalization rewrites the text
+    # it timed -- "33%" becomes "thirty three percent" -- so the captions would
+    # say something different from the script while the audio, the duration and
+    # the upload all stayed perfect. There is no error and nothing to notice
+    # except by reading the finished video.
+    align = payload.get("alignment") or {}
+    chars = align.get("characters") or []
+    starts = align.get("character_start_times_seconds") or []
+    ends = align.get("character_end_times_seconds") or []
+    if not chars:
+        raise TTSFallback("empty_alignment")
+
+    audio_b64 = payload.get("audio_base64")
+    if not audio_b64:
+        raise TTSFallback("empty_audio")
+
+    words = fold_characters_to_words(chars, starts, ends)
+
+    # Temp file then atomic replace. Writing straight to voiceover.mp3 and then
+    # falling back would leave a truncated file where the next stage expects a
+    # complete one.
+    tmp = out_mp3.with_suffix(".el.part")
+    tmp.write_bytes(base64.b64decode(audio_b64))
+    os.replace(tmp, out_mp3)
+    return words
+
+
+def synthesize(
+    text: str, voice: str, out_mp3: Path, provider: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], str, Optional[str], int]:
+    """Dispatch to the configured TTS provider, falling back to edge-tts.
+
+    Returns (words, provider_used, fallback_reason, characters_charged).
+
+    The fallback exists because the ElevenLabs free tier cannot cover a full
+    month of runs: losing a whole run's research and render to an exhausted
+    quota would be a far worse outcome than a week on the free voice.
+    """
+    chosen = (provider or TTS_PROVIDER).strip().lower()
+    if chosen == "elevenlabs":
+        try:
+            words = _synthesize_elevenlabs(text, out_mp3)
+            print("[tts] elevenlabs ok, %d characters" % len(text), flush=True)
+            return words, "elevenlabs", None, len(text)
+        except TTSFallback as exc:
+            reason = str(exc)
+            print("[tts] elevenlabs unavailable (%s) -- using edge-tts" % reason, flush=True)
+        except Exception as exc:  # noqa: BLE001 - never lose a run to TTS
+            reason = "unexpected:%s" % type(exc).__name__
+            print("[tts] elevenlabs failed (%s) -- using edge-tts" % reason, flush=True)
+    else:
+        reason = None
+
+    words = _synthesize_edge(text, voice, out_mp3)
+    return words, "edge", reason, 0
+
+
+def _effective_max(requested: Optional[float]) -> float:
+    """The request may tighten the ceiling but never loosen it."""
+    if requested is None:
+        return MAX_VIDEO_SECONDS
+    return min(float(requested), MAX_VIDEO_SECONDS)
+
+
+def _check_tts_spend(text: str) -> None:
+    """Refuse a runaway script BEFORE paying to synthesize it.
+
+    Blocking, and deliberately set well above what the 3-minute format should
+    ever produce -- this is not the length gate (that lives in the workflow's
+    Editorial Checks and in the advisory measurement below). It exists so that
+    a 1600-word draft, of the kind that has shipped from this pipeline before,
+    costs zero ElevenLabs characters instead of most of a month's free tier.
+    """
+    if len(text) > MAX_TTS_CHARS:
+        raise RuntimeError(
+            "script is %d characters, over MAX_TTS_CHARS=%d -- refusing to synthesize. "
+            "No TTS characters were spent. This is a spend guard, not the length "
+            "limit: a script this long means the editorial gate upstream let "
+            "something through." % (len(text), MAX_TTS_CHARS)
+        )
 
 
 def _ass_time(t: float) -> str:
@@ -387,6 +665,14 @@ class RenderRequest(BaseModel):
     # each clip inside its own slot 3-6 times.
     shot_seconds: Optional[float] = None
     subtitles: bool = True
+    # The request may LOWER the ceiling, never raise it (see _effective_max).
+    # A safety limit that a workflow can talk its way out of is not a limit.
+    max_seconds: Optional[float] = None
+    # 'edge' or 'elevenlabs'. Exists so a full end-to-end test render costs
+    # ZERO ElevenLabs characters: the free tier is ~4 videos a month, and
+    # burning one on a pipeline check is a bad trade. n8n never sets this --
+    # production runs use the worker's configured provider.
+    provider: Optional[str] = None
 
 
 @app.post("/render")
@@ -394,9 +680,32 @@ def render(req: RenderRequest) -> Dict[str, Any]:
     if not req.script_text.strip():
         raise HTTPException(status_code=400, detail="script_text is empty")
 
+    # Idempotency. n8n's HTTP Request node can retry a POST whose response was
+    # lost in transit even though the server handled it fine -- and a second
+    # job means a second ElevenLabs synthesis, ~2,260 characters, roughly a
+    # quarter of the monthly free tier, spent invisibly on a duplicate video.
+    #
+    # Keyed on the script and title, which is what actually determines the
+    # output. Within the TTL the same request returns the original job rather
+    # than starting another.
+    fingerprint = hashlib.sha256(
+        (req.script_text + "\x00" + (req.title or "")).encode("utf-8")
+    ).hexdigest()
+    now = time.time()
+    with _lock:
+        prior = _render_fingerprints.get(fingerprint)
+        if prior and now - prior[1] < RENDER_DEDUPE_TTL and prior[0] in _jobs:
+            print(
+                "[render] duplicate request for job %s -- returning it unchanged" % prior[0],
+                flush=True,
+            )
+            return {"job_id": prior[0], "status": _jobs[prior[0]].get("status"), "deduplicated": True}
+
     job_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     job_dir = JOBS_ROOT / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        _render_fingerprints[fingerprint] = (job_id, now)
 
     set_job(
         job_id,
@@ -419,9 +728,42 @@ def _render_job(job_id: str, job_dir: Path, req: RenderRequest) -> None:
         script_path = job_dir / "script.txt"
         script_path.write_text(req.script_text, encoding="utf-8")
 
+        max_seconds = _effective_max(req.max_seconds)
+        _check_tts_spend(req.script_text)
+
         voiceover = job_dir / "voiceover.mp3"
-        words = synthesize(req.script_text, req.voice or VOICE, voiceover)
+        words, tts_provider, tts_fallback_reason, tts_characters = synthesize(
+            req.script_text, req.voice or VOICE, voiceover, req.provider
+        )
+        # Recorded even on the happy path. A wrong voice id falls back to edge
+        # on every single run, forever, and the only symptom is this field --
+        # the video renders and uploads perfectly either way.
+        set_job(
+            job_id,
+            tts_provider=tts_provider,
+            tts_fallback_reason=tts_fallback_reason,
+            tts_characters=tts_characters,
+        )
         duration = probe_duration(voiceover)
+
+        # ADVISORY, not blocking. The run continues and uploads even when it is
+        # over the ceiling -- see MAX_VIDEO_SECONDS. What matters here is that
+        # the overrun is RECORDED rather than discovered on YouTube.
+        #
+        # measured_wpm is the important field: the word budget upstream is
+        # derived from an assumed speaking rate, and the only way that assumption
+        # ever gets corrected is by reading the real number back off a real job.
+        # edge-tts en-GB-RyanNeural measures ~141 wpm; ElevenLabs will differ,
+        # and until a job reports it, nobody knows by how much.
+        script_words = len(req.script_text.split())
+        measured_wpm = round(script_words / duration * 60.0, 1) if duration > 0 else 0.0
+        over = duration > max_seconds
+        if over:
+            print(
+                "[%s] OVER LENGTH: %.1fs vs ceiling %.0fs (%d words at %.1f wpm) "
+                "-- shipping anyway" % (job_id, duration, max_seconds, script_words, measured_wpm),
+                flush=True,
+            )
 
         subs_ass: Optional[Path] = None
         cue_count = 0
@@ -431,6 +773,11 @@ def _render_job(job_id: str, job_dir: Path, req: RenderRequest) -> None:
         set_job(
             job_id,
             voiceover_seconds=round(duration, 2),
+            measured_wpm=measured_wpm,
+            script_words=script_words,
+            max_seconds=max_seconds,
+            over_length=over,
+            over_length_by=round(max(0.0, duration - max_seconds), 1),
             word_timings=len(words),
             caption_cues=cue_count,
         )
@@ -440,8 +787,24 @@ def _render_job(job_id: str, job_dir: Path, req: RenderRequest) -> None:
         clips_dir = job_dir / "clips"
         clips_dir.mkdir(exist_ok=True)
         clips: List[Path] = []
+        # A TOTAL budget on top of the per-clip timeout. The pool went from a
+        # hardcoded 10 clips to 48, and 48 x the 120s per-clip timeout is 96
+        # minutes -- longer than the whole execution. Clips are optional by
+        # design (the assembler reuses what it has, and falls back to a solid
+        # colour with none at all), so running out of budget degrades the
+        # video's variety rather than failing the run.
+        download_started = time.time()
+        download_budget_hit = False
         with httpx.Client(timeout=120.0, follow_redirects=True) as client:
             for i, url in enumerate(req.footage_urls):
+                if time.time() - download_started > DOWNLOAD_BUDGET_SECONDS:
+                    download_budget_hit = True
+                    print(
+                        "[%s] download budget %.0fs exhausted after %d/%d clips"
+                        % (job_id, DOWNLOAD_BUDGET_SECONDS, len(clips), len(req.footage_urls)),
+                        flush=True,
+                    )
+                    break
                 dest = clips_dir / ("clip_%02d.mp4" % i)
                 try:
                     with client.stream("GET", url) as resp:
@@ -453,7 +816,13 @@ def _render_job(job_id: str, job_dir: Path, req: RenderRequest) -> None:
                         clips.append(dest)
                 except Exception:  # noqa: BLE001 - a dead clip URL is not fatal
                     dest.unlink(missing_ok=True)
-        set_job(job_id, clips_downloaded=len(clips))
+        set_job(
+            job_id,
+            clips_downloaded=len(clips),
+            clips_requested=len(req.footage_urls),
+            download_seconds=round(time.time() - download_started, 1),
+            download_budget_hit=download_budget_hit,
+        )
 
         # -- 3. trim + normalise ---------------------------------------------
         # Every segment is re-encoded to identical codec/size/fps/pix_fmt and
@@ -607,7 +976,14 @@ def _render_job(job_id: str, job_dir: Path, req: RenderRequest) -> None:
         # as a hung encode rather than a busy machine. 40x duration with a 15
         # minute floor covers the bad case without waiting forever on a genuinely
         # wedged job.
-        run(mux, timeout=int(max(900, duration * 40)), cwd=str(job_dir))
+        # Capped at MUX_TIMEOUT_CAP: duration * 40 at 180s is 7200s, which is
+        # longer than n8n's executionTimeout of 5400s -- the guard would have
+        # outlived the thing it is guarding.
+        run(
+            mux,
+            timeout=min(int(max(900, duration * 40)), MUX_TIMEOUT_CAP),
+            cwd=str(job_dir),
+        )
 
         # -- 5. thumbnail (spec node 10) --------------------------------------
         set_job(job_id, stage="thumbnail")
