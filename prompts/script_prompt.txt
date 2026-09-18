@@ -74,8 +74,8 @@ hook       State the surprising sourced fact in the FIRST sentence, and
 body 1     The fact in full: what was reported, by whom, when.
 body 2     Why it matters to a radiographer specifically, in their shift.
 body 3     Where AI or automation touches it — the concrete mechanism,
-           the actual tool or node, the actual steps.
-body 4     What the viewer can do about it now.
+           the actual tool or node, the actual steps — and what the
+           viewer can do about it now.
 cta        Invite BOTH radiographers AND AI practitioners to answer a
            SPECIFIC question. Not "let me know what you think".
 
@@ -103,8 +103,10 @@ Short sentences. Plain words. No jargon dumps, no lecture voice.
 OUTPUT
 =====================================================================
 
-Target pace: 130 words per minute. Hit the word count in your payload —
-going long is as wrong as going short.
+Hit the word count in your payload — going long is as wrong as going
+short. The payload states both the target and a HARD word ceiling; the
+ceiling is the number of words that fits the video's runtime at the
+measured speaking rate, and exceeding it is rejected outright.
 
 The SEO title must be under 60 characters, must reference AI/automation
 or radiology explicitly, must create curiosity without clickbait, and
@@ -128,8 +130,7 @@ Return ONLY valid JSON matching exactly this shape. No markdown. No preamble. No
     "body": [
       "section_1_title: content",
       "section_2_title: content",
-      "section_3_title: content",
-      "section_4_title: content"
+      "section_3_title: content"
     ],
     "cta": ""
   },

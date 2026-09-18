@@ -77,11 +77,46 @@ const strEquals = (left, right) => ({
 const WORKER = "={{ $('Config').first().json.MEDIA_WORKER_URL }}";
 
 // ---------------------------------------------------------------------------
+// Length budget -- ONE derivation, embedded verbatim in both the node that
+// instructs the writer and the node that judges the result.
+//
+// It used to be two independent constants and they disagreed exactly at the
+// margin. The writer's target was VIDEO_LENGTH_MINUTES * 130, but the only
+// real measurement on this stack is 336 words -> 142.7s of en-GB-RyanNeural,
+// which is 141 wpm. So a script sitting right on the old upper bound was
+// ~183s of audio against a 180s intent: the editorial gate passed it and the
+// video came out over length, and the gate looked correct while doing it.
+// Same failure class as the `|| 8` vs `|| 4` fallback drift this file already
+// carries scars from.
+//
+// Now MAX_VIDEO_SECONDS and SPEECH_WPM are the only inputs. maxWords is what
+// the ceiling actually permits; targetWords is set 10% below it so the normal
+// case has somewhere to land without tripping. SPEECH_WPM is a Config knob
+// because it is a MEASUREMENT, not a constant -- the worker reports
+// measured_wpm on every job and ElevenLabs does not speak at edge-tts's pace.
+const LENGTH_BUDGET = `const _maxSeconds = Number(cfg.MAX_VIDEO_SECONDS) || 180;
+const _wpm = Number(cfg.SPEECH_WPM) || 141;
+const maxWords = Math.round((_maxSeconds * _wpm) / 60);
+const targetWords = Math.round(maxWords / 1.1);
+`;
+
+// ---------------------------------------------------------------------------
 // 1. Schedule  (spec node 1)
 // ---------------------------------------------------------------------------
-node('Schedule · Every 3 Days 09:00', 'n8n-nodes-base.scheduleTrigger', 1.3, [-460, 300], {
+// Weekly, not every 3 days. The binding constraint is the ElevenLabs free tier:
+// 10,000 characters a month, and a 3-minute script is ~2,260 of them. That is
+// four videos a month before the quota is gone, so a 3-day cadence (~10 runs)
+// would spend the month's budget in under two weeks and silently fall back to
+// edge-tts for the rest.
+//
+// `field: 'days'` with daysInterval 7 rather than `field: 'weeks'`: the
+// weeksInterval/triggerAtDay field names could not be verified against the live
+// node (the n8n MCP server was down when this was written), and a wrong field
+// name on a trigger validates as a plain object and then silently never fires.
+// daysInterval is the same shape that has been running here for months.
+node('Schedule · Weekly 09:00', 'n8n-nodes-base.scheduleTrigger', 1.3, [-460, 300], {
   rule: {
-    interval: [{ field: 'days', daysInterval: 3, triggerAtHour: 9, triggerAtMinute: 0 }],
+    interval: [{ field: 'days', daysInterval: 7, triggerAtHour: 9, triggerAtMinute: 0 }],
   },
 });
 
@@ -116,12 +151,40 @@ const cfgFields = [
       'and AI practitioners interested in healthcare applications',
     'string',
   ],
-  // 4 minutes at 130 wpm = ~520 words. Was 8, which produced a 10.9-minute
-  // voiceover and dominated the run: render and upload together were 29 of the
-  // 36 minutes an execution took.
-  ['VIDEO_LENGTH_MINUTES', 4, 'number'],
-  // Body sections scale with length. Was hardcoded at 5 in two places.
-  ['BODY_SECTIONS', 4, 'number'],
+  // MAX_VIDEO_SECONDS and SPEECH_WPM are the REAL length controls -- see
+  // LENGTH_BUDGET above. maxWords = 180 * 141 / 60 = 423, targetWords = 385.
+  //
+  // The ceiling STEERS, it does not discard: a run that lands a little over
+  // 180s still ships. The worker records over_length and measured_wpm and
+  // uploads anyway, because throwing away a whole run's research over ten
+  // seconds of runtime is a worse outcome than a 3:10 video.
+  ['MAX_VIDEO_SECONDS', 180, 'number'],
+  // A MEASUREMENT, not a constant, and it is provider-specific:
+  //   edge-tts  en-GB-RyanNeural  ~141 wpm  (336 words -> 142.7s)
+  //   ElevenLabs eleven_multilingual_v2, voice JBFqnCBsd6RMkjVDRZzb
+  //                                ~169 wpm  (66 words -> 23.41s, job
+  //                                20260912-224249-bf6415)
+  //
+  // 165 rather than the measured 169: a deliberate ~2.5% margin, because the
+  // rate varies with the text (numbers, abbreviations and long proper nouns
+  // all read slower than plain prose) and the margin keeps the ceiling honest.
+  // At 165 the target is 450 words (~2:39 spoken) and the ceiling 495 (~2:55).
+  //
+  // Leaving this at edge's 141 would have produced 385-word scripts that
+  // ElevenLabs reads in 2:16 -- three quarters of a minute short of the format,
+  // with nothing failing to indicate it. The worker reports measured_wpm on
+  // every job; if it drifts from this number, change this number.
+  //
+  // NOTE: on a run that falls back to edge-tts (exhausted quota), a script
+  // written to 165 wpm is spoken at ~141 and lands around 3:12. That is the
+  // advisory over_length case and it ships by design.
+  ['SPEECH_WPM', 165, 'number'],
+  // Kept only because the writer's prompt reads better in minutes than in
+  // seconds. Nothing derives a word count from it any more.
+  ['VIDEO_LENGTH_MINUTES', 3, 'number'],
+  // 3, not 4: at 385 words a 4th section is ~61 words, too thin to say
+  // anything. Three sections of ~82 words each have room for a real point.
+  ['BODY_SECTIONS', 3, 'number'],
   // One shot every SHOT_SECONDS. The worker used to divide the whole voiceover
   // by the clip count, which gave 65-second slots and looped each clip 3-6
   // times inside its own slot -- the repetition problem. FOOTAGE_KEYWORDS x
@@ -129,6 +192,17 @@ const cfgFields = [
   ['SHOT_SECONDS', 4, 'number'],
   ['FOOTAGE_KEYWORDS', 12, 'number'],
   ['FOOTAGE_PER_KEYWORD', 4, 'number'],
+  // The pool was silently capped at 10 in Collect Footage URLs while Config
+  // advertised 12 x 4 = 48. At 180s / 4s shots that is 45 shots drawn from 10
+  // clips -- each clip reappearing ~5 times, which is the exact repetition
+  // defect SHOT_SECONDS was introduced to fix, reintroduced downstream of it.
+  ['FOOTAGE_POOL_MAX', 48, 'number'],
+  // Must exceed SHOT_SECONDS by a real margin. The worker walks an offset into
+  // each clip on reuse (start_at = (n * shot) % headroom) so a repeat shows a
+  // different part of the clip -- but headroom is clip_length - shot_length, so
+  // at min_duration 8 with 4s shots there were 4 seconds to walk and the offset
+  // wrapped after a single reuse. 15 gives 11 seconds of genuine variation.
+  ['FOOTAGE_MIN_DURATION', 15, 'number'],
   ['MEDIA_WORKER_URL', 'http://host.docker.internal:8099', 'string'],
   // WRITER_MODEL and JUDGE_MODEL must stay on DIFFERENT vendors. This is the
   // gate's central property, not a preference: a judge sharing the writer's
@@ -143,7 +217,19 @@ const cfgFields = [
   ['RESEARCH_MODEL', 'openai/gpt-5.6-luna', 'string'],
   ['WRITER_MODEL', 'anthropic/claude-sonnet-4.5', 'string'],
   ['JUDGE_MODEL', 'openai/gpt-5.6-luna', 'string'],
+  // MUST stay 'private' while TTS runs on the ElevenLabs free tier: that tier
+  // grants no commercial rights. A build guard enforces it (see below) rather
+  // than leaving it to memory.
   ['PRIVACY_STATUS', 'private', 'string'],
+  // Appended to the description ONLY on runs that actually used ElevenLabs.
+  // Their free tier requires attribution; check the current wording against
+  // their terms and edit here -- it is a Config value precisely so that
+  // correcting it never needs a code change.
+  [
+    'TTS_ATTRIBUTION_TEXT',
+    'Voiceover generated with ElevenLabs — https://elevenlabs.io',
+    'string',
+  ],
 ];
 
 node('Config', 'n8n-nodes-base.set', 3.5, [-240, 300], {
@@ -662,8 +748,9 @@ const research = $('Research Ready').first().json;
 const mem = $('Postgres · Content Memory').first().json || {};
 const citable_facts = Array.isArray(mem.facts) ? mem.facts : [];
 
-const words = Math.round(cfg.VIDEO_LENGTH_MINUTES * 130);
-const sections = cfg.BODY_SECTIONS || 4;
+${LENGTH_BUDGET}
+const words = targetWords;
+const sections = cfg.BODY_SECTIONS || 3;
 const perSection = Math.round((words - 140) / sections);
 
 const instruction = [
@@ -679,8 +766,8 @@ const instruction = [
   '  section 1  - the fact in full: what was actually reported, by whom, and when.',
   '  section 2  - why it matters to a radiographer specifically, in their shift.',
   '  section 3  - where AI or automation touches it - the concrete mechanism, the',
-  '               actual tool or n8n node, the actual sequence of steps.',
-  '  section 4  - what a viewer can do about it now.',
+  '               actual tool or n8n node, the actual sequence of steps - and what',
+  '               a viewer can do about it now.',
   '  cta        - invite BOTH radiographers and AI practitioners to answer a',
   '               specific question, not "let me know what you think".',
   '',
@@ -693,15 +780,17 @@ const instruction = [
   'unverified marketing claim and repeating it is worse than inventing one,',
   'because it looks sourced.',
   '',
-  'LENGTH. Target ' + cfg.VIDEO_LENGTH_MINUTES + ' minutes at 130 words per minute = ' +
-    words + ' words TOTAL, in EXACTLY ' + sections + ' body sections.',
+  'LENGTH. Target ' + words + ' words TOTAL, in EXACTLY ' + sections + ' body sections.',
   '  - hook: 40-60 words',
   '  - EACH of the ' + sections + ' body sections: about ' + perSection +
     ' words (per section, not for all of them combined)',
   '  - cta: 40-60 words',
+  'This is a ' + cfg.VIDEO_LENGTH_MINUTES + '-minute video. At ' + _wpm +
+    ' words per minute the HARD ceiling is ' + maxWords + ' words (' + _maxSeconds +
+    ' seconds of speech); anything above that will be rejected.',
   'Write the actual spoken words. Do not outline, summarise, or write section',
-  'abstracts. Going long is as wrong as going short: this is a ' +
-    cfg.VIDEO_LENGTH_MINUTES + '-minute video, not a lecture.',
+  'abstracts. Going long is as wrong as going short: this is a short educational',
+  'piece, not a lecture.',
   '',
   // The previous version of this line asked for "worked examples, specific tools
   // and real numbers". "Real numbers" is what produced "a 30% decrease at our
@@ -858,7 +947,8 @@ const parts = [
 ];
 const fullText = parts.map((p) => String(p[1] || '')).join(' ');
 const words = fullText.trim() ? fullText.trim().split(/\\s+/).length : 0;
-const target = Math.round((cfg.VIDEO_LENGTH_MINUTES || 8) * 130);
+${LENGTH_BUDGET}
+const target = targetWords;
 
 // There is NO traceability exemption for percentages, and that is deliberate.
 //
@@ -1008,16 +1098,19 @@ for (const r of RULES) {
 }
 
 // Mechanical rulings live here too, so ONE component owns quality.
-const wantSections = cfg.BODY_SECTIONS || 4;
+const wantSections = cfg.BODY_SECTIONS || 3;
 if (body.length !== wantSections) {
   add('structure', 'blocking', body.length + ' body sections', 'Exactly ' + wantSections + ' required.');
 }
 if (words < target * 0.7) add('too-short', 'blocking', words + ' words vs target ' + target, 'Under 70% of target length.');
-// Overshoot is now a real failure, not a bonus. A 1606-word draft against a
-// 1040 target produced a 10.9-minute video for an 8-minute slot, and the whole
-// point of the 4-minute format is that it stays 4 minutes.
-if (words > target * 1.35) {
-  add('too-long', 'blocking', words + ' words vs target ' + target, 'Over 135% of target length.');
+// The upper bound is maxWords -- the number of words that actually fits in
+// MAX_VIDEO_SECONDS at SPEECH_WPM -- NOT a percentage of the target. A percentage
+// is a second constant that drifts away from the first: the old 135% of a
+// 130-wpm target permitted 183s of speech against a 180s intent, so the gate
+// passed scripts the format could not hold and still read as if it were working.
+if (words > maxWords) {
+  add('too-long', 'blocking', words + ' words vs max ' + maxWords,
+    'Over the ' + _maxSeconds + 's ceiling at ' + _wpm + ' wpm.');
 }
 
 const title = (s.seo && s.seo.title) || '';
@@ -1362,7 +1455,7 @@ node(
         { name: 'query', value: '={{ $json.keyword }}' },
         { name: 'per_page', value: "={{ $('Config').first().json.FOOTAGE_PER_KEYWORD }}" },
         { name: 'orientation', value: 'landscape' },
-        { name: 'min_duration', value: '8' },
+        { name: 'min_duration', value: "={{ $('Config').first().json.FOOTAGE_MIN_DURATION }}" },
       ],
     },
     options: { timeout: 30000 },
@@ -1394,7 +1487,15 @@ for (const item of $input.all()) {
   }
 }
 
-const footage_urls = [...new Set(urls)].slice(0, 10);
+// The cap was a hardcoded 10 while Config advertised FOOTAGE_KEYWORDS x
+// FOOTAGE_PER_KEYWORD = 48. At a 180s voiceover cut into 4s shots that is 45
+// shots drawn from 10 clips, so every clip came back around five times -- the
+// exact repetition SHOT_SECONDS exists to prevent, reintroduced two nodes
+// downstream of it where nothing in Config hinted at it.
+const footage_urls = [...new Set(urls)].slice(
+  0,
+  Number($('Config').first().json.FOOTAGE_POOL_MAX) || 48
+);
 
 const s = $('Script Approved').first().json;
 const body = Array.isArray(s.script.body) ? s.script.body : [];
@@ -1431,10 +1532,16 @@ node(
     sendBody: true,
     specifyBody: 'json',
     jsonBody:
-      "={{ JSON.stringify({ script_text: $json.full_script, footage_urls: $json.footage_urls, title: $json.title, shot_seconds: $('Config').first().json.SHOT_SECONDS, subtitles: true }) }}",
+      "={{ JSON.stringify({ script_text: $json.full_script, footage_urls: $json.footage_urls, title: $json.title, shot_seconds: $('Config').first().json.SHOT_SECONDS, max_seconds: $('Config').first().json.MAX_VIDEO_SECONDS, subtitles: true }) }}",
     options: { timeout: 60000 },
-  },
-  { retryOnFail: true, maxTries: 2 }
+  }
+  // Deliberately NO retryOnFail. A retried POST whose first attempt actually
+  // succeeded server-side starts a SECOND render, and a second render is a
+  // second paid TTS synthesis -- ~2,260 characters, roughly a quarter of the
+  // monthly free tier, spent silently on a duplicate video nobody watches.
+  // The worker fingerprints (script_text, title) and returns the existing job
+  // for a repeat request, which covers the genuine transport-failure case
+  // without paying twice. A build guard stops this being reintroduced.
 );
 
 node('Wait · Render Poll', 'n8n-nodes-base.wait', 1.1, [5260, 300], {
@@ -1489,6 +1596,53 @@ node(
   { retryOnFail: true, maxTries: 2 }
 );
 
+// Captures the FINISHED job dict in a node that runs exactly once.
+//
+// Reading the worker's job fields straight from $('Worker · Render Status')
+// does not work and fails in the most misleading way available: that node runs
+// once per 20-second poll, so .first() returns the FIRST poll -- almost always
+// {status: "running"} with none of the completion fields present yet. Every
+// downstream read comes back undefined, on every run, which reads as "the
+// worker never reports this" rather than "you asked the wrong iteration".
+//
+// Sitting on output 0 of the Switch, this node runs once, when status is
+// already 'done', and everything downstream reads from it by name.
+node('Render Done', 'n8n-nodes-base.code', 2, [5830, 180], {
+  jsCode: `const job = $input.first().json;
+
+return [{
+  json: {
+    job_id: job.job_id ?? null,
+
+    // Which voice actually spoke. The fallback to edge-tts is SILENT by design
+    // -- the video renders and uploads perfectly either way -- so a wrong voice
+    // id, an exhausted quota or a revoked key would otherwise go unnoticed for
+    // months. This field is also what makes the attribution line conditional:
+    // crediting ElevenLabs on a run that used edge would be a false statement.
+    tts_provider: job.tts_provider ?? 'edge',
+    tts_fallback_reason: job.tts_fallback_reason ?? null,
+    tts_characters: job.tts_characters ?? 0,
+
+    voiceover_seconds: job.voiceover_seconds ?? null,
+    video_seconds: job.video_seconds ?? null,
+    // Advisory: a run over the ceiling ships anyway. This is how it is noticed.
+    over_length: job.over_length ?? false,
+    over_length_by: job.over_length_by ?? 0,
+    max_seconds: job.max_seconds ?? null,
+    // The measurement that lets Config.SPEECH_WPM stop being a guess.
+    measured_wpm: job.measured_wpm ?? null,
+    script_words: job.script_words ?? null,
+    shots_planned: job.shots_planned ?? null,
+    unique_clips: job.unique_clips ?? null,
+    clips_downloaded: job.clips_downloaded ?? null,
+    clips_requested: job.clips_requested ?? null,
+    download_budget_hit: job.download_budget_hit ?? false,
+    video_bytes: job.video_bytes ?? null,
+  },
+  pairedItem: { item: 0 },
+}];`,
+});
+
 node(
   'YouTube · Upload Video',
   'n8n-nodes-base.youTube',
@@ -1505,14 +1659,21 @@ node(
       // A flagged script uploads anyway (your call), but the violations are
       // prepended to the description so they are impossible to miss at review
       // time rather than buried in an execution log you may never open.
+      // The attribution is CONDITIONAL on the provider that actually spoke.
+      // ElevenLabs' free tier requires attribution, but the quota runs out
+      // roughly every fifth weekly run and the worker then falls back to
+      // edge-tts -- an unconditional line would credit a vendor that had
+      // nothing to do with that video, which is worse than omitting it.
       description:
-        "={{ $('Script Approved').first().json.editorial_blocking_count > 0" +
+        "={{ ($('Script Approved').first().json.editorial_blocking_count > 0" +
         " ? ('[UNVERIFIED CLAIMS - REVIEW BEFORE PUBLISHING]\\n' +" +
         "    $('Script Approved').first().json.editorial_violations" +
         "      .filter(v => v.severity === 'blocking')" +
         "      .map(v => '- ' + v.rule + ': ' + v.quote).join('\\n') +" +
         "    '\\n\\n' + $('Script Approved').first().json.seo.description)" +
-        " : $('Script Approved').first().json.seo.description }}",
+        " : $('Script Approved').first().json.seo.description)" +
+        " + ($('Render Done').first().json.tts_provider === 'elevenlabs'" +
+        "    ? ('\\n\\n' + $('Config').first().json.TTS_ATTRIBUTION_TEXT) : '') }}",
       tags: "={{ ($('Script Approved').first().json.seo.tags || []).join(',') }}",
       // Guard: a script carrying unresolved blocking violations is forced
       // private no matter what Config says. Uploads are private today, so this
@@ -1600,6 +1761,9 @@ const ranked = $('Rank & Balance Domains').first().json;
 const prep = $('Prepare Research Payload').first().json;
 const footage = $('Collect Footage URLs').first().json;
 const upload = $('YouTube · Upload Video').first().json;
+// Render Done, never Worker · Render Status -- that one runs once per poll and
+// .first() would hand back the first 'running' response instead of the result.
+const render = $('Render Done').first().json;
 
 // The YouTube node publishes the new video id as 'uploadId', not 'id'.
 const videoId = upload.uploadId || upload.id;
@@ -1626,6 +1790,33 @@ return [{
     footage_clips_used: footage.footage_count,
     script_word_count: script.word_count ?? footage.word_count,
     script_word_target: script.word_target ?? null,
+
+    // Runtime, measured rather than assumed. over_length true means the video
+    // is longer than MAX_VIDEO_SECONDS and shipped anyway -- that is the
+    // intended behaviour, not a failure, but it is the signal that the word
+    // budget needs recalibrating.
+    //
+    // measured_wpm is the number that recalibrates it: Config.SPEECH_WPM is an
+    // assumption, and this is what it should have been. If they disagree
+    // consistently, update SPEECH_WPM -- the whole word budget derives from it.
+    // Which voice spoke, and why if it was not the intended one. A wrong voice
+    // id or an exhausted quota falls back to edge-tts and produces a perfectly
+    // good video, so this field is the ONLY symptom -- check it on every run
+    // before concluding ElevenLabs is working.
+    tts_provider: render.tts_provider ?? null,
+    tts_fallback_reason: render.tts_fallback_reason ?? null,
+    tts_characters: render.tts_characters ?? 0,
+
+    voiceover_seconds: render.voiceover_seconds ?? null,
+    video_seconds: render.video_seconds ?? null,
+    over_length: render.over_length ?? false,
+    over_length_by: render.over_length_by ?? 0,
+    measured_wpm: render.measured_wpm ?? null,
+    configured_wpm: $('Config').first().json.SPEECH_WPM ?? null,
+    shots_planned: render.shots_planned ?? null,
+    unique_clips: render.unique_clips ?? null,
+    clips_downloaded: render.clips_downloaded ?? null,
+    download_budget_hit: render.download_budget_hit ?? false,
 
     // Editorial gate outcome. 'flagged' means blocking violations survived the
     // revision round and the video was uploaded private with a warning
@@ -1678,7 +1869,7 @@ return [{
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
-connect('Schedule · Every 3 Days 09:00', 'Config');
+connect('Schedule · Weekly 09:00', 'Config');
 // Config -> memory -> channels. Safe in the data path because Build Channel
 // List reads $('Config').first(), not $input -- which matters, since a Postgres
 // node also replaces the item with its result.
@@ -1729,7 +1920,8 @@ connect('Collect Footage URLs', 'Worker · Render Video');
 connect('Worker · Render Video', 'Wait · Render Poll');
 connect('Wait · Render Poll', 'Worker · Render Status');
 connect('Worker · Render Status', 'Switch · Render State');
-connect('Switch · Render State', 'Worker · Download Video', 0); // done
+connect('Switch · Render State', 'Render Done', 0); // done
+connect('Render Done', 'Worker · Download Video');
 connect('Switch · Render State', 'Render Failed', 1); // failed
 connect('Switch · Render State', 'Wait · Render Poll', 2); // running -> poll again
 
@@ -1774,6 +1966,47 @@ if (badRefs) {
 const withCreds = nodes.filter((n) => n.credentials).map((n) => n.name);
 if (withCreds.length) {
   console.error('REFUSING TO WRITE: credentials blocks present on: ' + withCreds.join(', '));
+  process.exit(1);
+}
+
+// The ElevenLabs FREE tier grants no commercial rights and requires attribution.
+// Uploads must therefore stay private while that is the voice provider, and
+// "we'll remember to check" is not a control -- this is the same class of
+// mistake as the silent font fallback, invisible until someone looks.
+//
+// Flipping PRIVACY_STATUS to 'public' is a deliberate act: pay for a Starter
+// plan (or switch TTS_PROVIDER to 'edge' on the worker) and then remove this
+// guard in the same commit, so the reason is recorded alongside the change.
+const cfgLookup = Object.fromEntries(cfgFields.map(([k, v]) => [k, v]));
+if (cfgLookup.PRIVACY_STATUS !== 'private') {
+  console.error(
+    'REFUSING TO WRITE: PRIVACY_STATUS is ' + JSON.stringify(cfgLookup.PRIVACY_STATUS) +
+      ", but the ElevenLabs free tier grants no commercial rights.\n" +
+      '  Uploads must stay private until TTS is on a paid plan or switched to edge-tts.'
+  );
+  process.exit(1);
+}
+if (!String(cfgLookup.TTS_ATTRIBUTION_TEXT || '').trim()) {
+  console.error(
+    'REFUSING TO WRITE: TTS_ATTRIBUTION_TEXT is empty. The free tier requires\n' +
+      '  attribution, and the description expression appends this on ElevenLabs runs.'
+  );
+  process.exit(1);
+}
+
+// A retry on the render POST spawns a SECOND job when the response is lost but
+// the server handled the request -- and a second job is a second ElevenLabs
+// synthesis, ~2,260 characters, about a quarter of the monthly free tier, spent
+// on a duplicate video nobody watches. The worker fingerprints render requests
+// and returns the original job instead, so the retry is both unnecessary and
+// expensive; this guard stops it being reintroduced by habit.
+const renderNode = nodes.find((n) => n.name === 'Worker · Render Video');
+if (renderNode && (renderNode.retryOnFail || renderNode.maxTries)) {
+  console.error(
+    'REFUSING TO WRITE: Worker · Render Video has retryOnFail/maxTries set.\n' +
+      '  A retried render POST costs a second paid TTS synthesis. The worker\n' +
+      '  de-duplicates by script fingerprint; rely on that instead.'
+  );
   process.exit(1);
 }
 
